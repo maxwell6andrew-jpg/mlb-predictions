@@ -1,0 +1,20 @@
+# Python
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/.env
+backend/data/cache/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Data files too large for GitHub
+backend/data/chadwick/people.csv
+backend/data/lahman/
+
+# OS
+.DS_Store
+*.log
+nohup.out
