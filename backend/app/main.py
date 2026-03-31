@@ -482,6 +482,38 @@ async def lifespan(app: FastAPI):
         import traceback
         traceback.print_exc()
 
+    # 11. Refresh team roster stats with post-adjustment WAR/HR/AVG
+    print("Refreshing team roster stats with adjusted projections...")
+    try:
+        for team_id_key, team_proj in list(cache.teams.items()):
+            refreshed_war = 0.0
+            for batter in team_proj.get("batters", []):
+                mlbam_id = batter.get("id")
+                l_id = id_mapper.mlbam_to_lahman(mlbam_id) if mlbam_id else None
+                if l_id:
+                    updated = cache.get_batting(l_id)
+                    if updated:
+                        batter["hr"] = updated.get("hr")
+                        batter["avg"] = updated.get("avg")
+                        batter["ops"] = updated.get("ops")
+                        batter["war"] = updated.get("war", 0)
+                refreshed_war += batter.get("war", 0)
+            for pitcher in team_proj.get("pitchers", []):
+                mlbam_id = pitcher.get("id")
+                l_id = id_mapper.mlbam_to_lahman(mlbam_id) if mlbam_id else None
+                if l_id:
+                    updated = cache.get_pitching(l_id)
+                    if updated:
+                        pitcher["era"] = updated.get("era")
+                        pitcher["whip"] = updated.get("whip")
+                        pitcher["k_per_9"] = updated.get("k_per_9")
+                        pitcher["war"] = updated.get("war", 0)
+                refreshed_war += pitcher.get("war", 0)
+            cache.set_team(team_id_key, team_proj)
+        print(f"  Refreshed roster stats for {len(cache.teams)} teams")
+    except Exception as e:
+        print(f"  Roster refresh failed (non-fatal): {e}")
+
     elapsed = (datetime.now(timezone.utc) - start).seconds
     app.state.startup_time = datetime.now(timezone.utc).isoformat()
     print("=" * 60)
