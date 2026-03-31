@@ -4,7 +4,7 @@ const BACKEND = import.meta.env.VITE_API_URL || ''
 
 const api = axios.create({
   baseURL: `${BACKEND}/api`,
-  timeout: 30000,
+  timeout: 120000,
 })
 
 export async function searchAll(query) {

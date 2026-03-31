@@ -33,7 +33,7 @@ export default function HomePage() {
         <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>Projected Standings</h2>
       </div>
 
-      {loading && <div className="loading">Loading projections</div>}
+      {loading && <div className="loading">Loading projections — first load may take up to 2 minutes while the server wakes up</div>}
       {error && <div className="error">Failed to load standings: {error}</div>}
       {standings && <StandingsTable standings={standings} />}
     </div>
