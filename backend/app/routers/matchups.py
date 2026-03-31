@@ -8,8 +8,12 @@ from fastapi import APIRouter, Request, HTTPException
 from datetime import date
 import httpx
 
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
 from app.models.matchup import predict_game
 
+limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/api")
 
 MLB_API = "https://statsapi.mlb.com/api/v1"
@@ -38,6 +42,7 @@ def _pitcher_from_cache(mlbam_id: int, cache, id_mapper) -> dict | None:
 
 
 @router.get("/matchups/today")
+@limiter.limit("20/minute")
 async def matchups_today(request: Request):
     """Return today's game predictions with win probabilities."""
     today = date.today().isoformat()
@@ -123,6 +128,7 @@ async def matchups_today(request: Request):
 
 
 @router.get("/model/coefficients")
+@limiter.limit("20/minute")
 async def model_coefficients(request: Request):
     """Return OLS coefficient table with standard errors and p-values."""
     team_model = getattr(request.app.state, "team_model", None)
@@ -167,6 +173,7 @@ async def model_coefficients(request: Request):
 
 
 @router.get("/model/validation")
+@limiter.limit("20/minute")
 async def model_validation(request: Request):
     """Return walk-forward validation detail (actual vs predicted by team/year)."""
     team_model = getattr(request.app.state, "team_model", None)

@@ -4,8 +4,13 @@
 """
 
 from fastapi import APIRouter, Request, HTTPException
+
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
 from app.config import PROJECTION_YEAR
 
+limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/api")
 
 # Division → list of team names for sorting
@@ -272,6 +277,7 @@ def _current_pace(team_proj: dict, current_season_data: dict | None) -> dict:
 
 
 @router.get("/season/projections")
+@limiter.limit("20/minute")
 async def season_projections(request: Request):
     """Full season projections for all 30 teams with CI, pace, and narrative."""
     cache = request.app.state.projection_cache
@@ -334,6 +340,7 @@ async def season_projections(request: Request):
 
 
 @router.get("/season/standings")
+@limiter.limit("20/minute")
 async def season_standings_by_division(request: Request):
     """Division standings with projected playoff picture."""
     resp = await season_projections(request)

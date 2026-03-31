@@ -10,9 +10,14 @@ On startup:
 """
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from datetime import datetime, timezone
+
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from app.data.lahman_loader import LahmanData
 from app.data.id_mapper import IDMapper
@@ -23,9 +28,11 @@ from app.models.marcel_pitching import MarcelPitching
 from app.models.team_regression import fit_team_model, predict_wins
 from app.config import LAHMAN_DIR, CHADWICK_DIR, PROJECTION_YEAR
 
-from fastapi import Request
 from app.routers import search, teams, players
 from app.routers import matchups, season
+
+# Rate limiter: 60 requests/minute per IP
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 
 
 async def _compute_team_projections(app):
@@ -264,6 +271,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MLB Predictor", lifespan=lifespan)
 
+# Rate limiting
+app.state.limiter = limiter
+
+
+def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Too many requests. Please try again later."},
+    )
+
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -280,6 +300,7 @@ app.include_router(season.router)
 
 
 @app.get("/api/health")
+@limiter.limit("30/minute")
 async def health(request: Request):
     return {
         "status": "ok",

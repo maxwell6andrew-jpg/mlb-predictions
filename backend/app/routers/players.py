@@ -1,6 +1,10 @@
 from fastapi import APIRouter, Request, HTTPException
 import pandas as pd
 
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address)
 router = APIRouter()
 
 
@@ -55,6 +59,7 @@ def _build_historical(lahman, lahman_id: str, is_pitcher: bool, n_years: int = 5
 
 
 @router.get("/api/player/{player_id}")
+@limiter.limit("30/minute")
 async def get_player(request: Request, player_id: int):
     """Get player projection and historical data."""
     id_mapper = request.app.state.id_mapper
