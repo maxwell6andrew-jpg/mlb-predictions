@@ -115,21 +115,23 @@ class MarcelPitching:
             ipouts = row.get("IPouts", 0)
             ip_list.append(ipouts / 3)
 
-        total_bfp = 0
+        # Compute PA-weighted BFP for regression denominator
+        bfp_list = []
         for _, row in history.iterrows():
             bfp = row.get("BFP", 0)
             if bfp == 0:
-                # Estimate BFP from IP
                 ipouts = row.get("IPouts", 0)
                 bfp = int(ipouts / 3 * 4.3)
-            total_bfp += bfp
+            bfp_list.append(bfp)
 
-        weighted_bfp = total_bfp * sum(WEIGHTS[:len(ip_list)]) / len(ip_list) / sum(WEIGHTS[:len(ip_list)]) if ip_list else 0
+        n = len(bfp_list)
+        w = WEIGHTS[:n]
+        weighted_bfp = sum(b * wt for b, wt in zip(bfp_list, w)) / sum(w) * n if n > 0 else 0
 
         # Step 2: Regress toward league mean
         regressed = {}
         for stat, reg_const in REGRESSION.items():
-            reliability = total_bfp / (total_bfp + reg_const)
+            reliability = weighted_bfp / (weighted_bfp + reg_const)
             player_rate = rates.get(stat, self.league_avg.get(stat, 0))
             lg_rate = self.league_avg.get(stat, 0)
             regressed[stat] = player_rate * reliability + lg_rate * (1 - reliability)
@@ -162,12 +164,22 @@ class MarcelPitching:
         sv = 0 if is_starter else int(projected_ip / 3)
 
         # WAR via FIP
-        fip_constant = self.league_avg.get("era", 4.0) - (13 * hr_allowed + 3 * bb - 2 * so) / max(projected_ip, 1) if projected_ip else 0
-        fip = (13 * hr_allowed + 3 * bb - 2 * so) / max(projected_ip, 1) + fip_constant
-        lg_fip = self.league_avg.get("era", 4.0)
-        war = round((lg_fip - fip) / 10 * (projected_ip / 9) + 0.3 * (projected_ip / (180 if is_starter else 60)), 1)
+        # FIP = (13*HR + 3*BB - 2*K) / IP + cFIP
+        # cFIP is computed from LEAGUE totals so it doesn't cancel out
+        lg_era = self.league_avg.get("era", 4.0)
+        lg_hr9 = self.league_avg.get("hr_per_9", 1.2)
+        lg_bb9 = self.league_avg.get("bb_per_9", 3.2)
+        lg_k9 = self.league_avg.get("k_per_9", 8.5)
+        cfip = lg_era - (13 * lg_hr9 / 9 + 3 * lg_bb9 / 9 - 2 * lg_k9 / 9)
 
-        confidence = min(total_bfp / 1500, 1.0)
+        player_fip_component = (13 * hr_allowed + 3 * bb - 2 * so) / max(projected_ip, 1)
+        fip = player_fip_component + cfip
+
+        # WAR = (lg_FIP - player_FIP) / runs_per_win * (IP/9) + replacement_level
+        replacement_level = 0.3 * (projected_ip / (180 if is_starter else 60))
+        war = round((lg_era - fip) / 10 * (projected_ip / 9) + replacement_level, 1)
+
+        confidence = min(weighted_bfp / 1500, 1.0)
 
         return {
             "player_id": lahman_id,

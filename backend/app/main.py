@@ -35,6 +35,66 @@ from app.routers import matchups, season
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 
 
+def _run_sanity_checks(app):
+    """Post-projection sanity checks — flag obvious errors before serving."""
+    cache = app.state.projection_cache
+    standings = app.state.standings_cache
+    lahman = app.state.lahman
+
+    print("\n--- SANITY CHECKS ---")
+    violations = []
+
+    # Check team win totals
+    for team in standings:
+        w = team["projected_wins"]
+        name = team["name"]
+        if w < 55:
+            violations.append(f"  TEAM: {name} projects {w} wins (< 55)")
+        elif w > 105:
+            violations.append(f"  TEAM: {name} projects {w} wins (> 105)")
+
+    # Check individual player projections
+    for lahman_id, proj in cache.batting.items():
+        name = proj.get("name", lahman_id)
+
+        # Power hitter check: >25 HR in any of last 3 years must project >= 10
+        hist = lahman.get_batting_history(lahman_id, PROJECTION_YEAR, n_years=3)
+        if not hist.empty and "HR" in hist.columns:
+            max_hr = int(hist["HR"].max())
+            if max_hr >= 25 and proj.get("hr", 0) < 10:
+                old_hr = proj["hr"]
+                # Floor at 10 HR for known power hitters
+                proj["hr"] = max(10, int(max_hr * 0.3))
+                proj["hr_rate"] = round(proj["hr"] / max(proj["projected_pa"], 1), 4)
+                violations.append(f"  BATTER FIX: {name} had {max_hr} HR max but projected {old_hr} → corrected to {proj['hr']}")
+                cache.set_batting(lahman_id, proj)
+
+        # Zero AVG check
+        if proj.get("avg", 0) == 0 and proj.get("projected_pa", 0) > 100:
+            violations.append(f"  BATTER: {name} has 0.000 AVG with {proj['projected_pa']} PA")
+
+    for lahman_id, proj in cache.pitching.items():
+        name = proj.get("name", lahman_id)
+
+        # SP with >150 IP last year must project >100 IP
+        hist = lahman.get_pitching_history(lahman_id, PROJECTION_YEAR, n_years=1)
+        if not hist.empty and "IPouts" in hist.columns:
+            last_ip = hist["IPouts"].sum() / 3
+            if last_ip > 150 and proj.get("projected_ip", 0) < 100:
+                old_ip = proj["projected_ip"]
+                proj["projected_ip"] = round(max(100, last_ip * 0.7), 1)
+                violations.append(f"  PITCHER FIX: {name} threw {last_ip:.0f} IP last year but projected {old_ip} → corrected to {proj['projected_ip']}")
+                cache.set_pitching(lahman_id, proj)
+
+    if violations:
+        print(f"  {len(violations)} sanity violations found:")
+        for v in violations:
+            print(v)
+    else:
+        print("  All checks passed.")
+    print()
+
+
 async def _compute_team_projections(app):
     """Compute projections for all 30 teams using the fitted OLS model."""
     api_client = app.state.api_client
@@ -257,6 +317,9 @@ async def lifespan(app: FastAPI):
         print(f"WARNING: Team projection failed: {e}")
         import traceback
         traceback.print_exc()
+
+    # 8. Sanity check all projections
+    _run_sanity_checks(app)
 
     elapsed = (datetime.now(timezone.utc) - start).seconds
     app.state.startup_time = datetime.now(timezone.utc).isoformat()
