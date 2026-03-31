@@ -134,10 +134,38 @@ async def get_player(request: Request, player_id: int):
     if lahman_id:
         historical = _build_historical(lahman, lahman_id, is_pitcher, n_years=5)
 
+    # Resolve team name — MLB API may not have currentTeam in preseason/offseason
+    team_name = api_player.get("team", "")
+    team_id_resolved = api_player.get("team_id")
+    if not team_name and team_id_resolved:
+        # Look up from our teams list
+        for t in getattr(request.app.state, "teams_list", []):
+            if t.get("id") == team_id_resolved:
+                team_name = t.get("name", "")
+                break
+    if not team_name:
+        # Fall back: check which team roster this player is on
+        for tid, team_proj in cache.teams.items():
+            for b in team_proj.get("batters", []):
+                if b.get("id") == player_id:
+                    team_name = team_proj.get("name", "")
+                    team_id_resolved = tid
+                    break
+            if team_name:
+                break
+            for p in team_proj.get("pitchers", []):
+                if p.get("id") == player_id:
+                    team_name = team_proj.get("name", "")
+                    team_id_resolved = tid
+                    break
+            if team_name:
+                break
+
     player_bio = {
         "id": player_id,
         "name": api_player["name"],
-        "team": api_player.get("team", ""),
+        "team": team_name,
+        "team_id": team_id_resolved,
         "position": api_player.get("position", ""),
         "age": api_player.get("age"),
         "bats": api_player.get("bats", ""),

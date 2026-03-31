@@ -31,6 +31,21 @@ async def search(request: Request, q: str = Query(..., min_length=2, max_length=
     # Search players via MLB API
     matching_players = await api_client.search_people(q)
 
+    # Fill in missing team names from our roster cache
+    cache = request.app.state.projection_cache
+    if any(not p.get("team") for p in matching_players):
+        # Build a quick lookup: mlbam_id → team_name
+        player_team_map = {}
+        for tid, team_proj in cache.teams.items():
+            tname = team_proj.get("name", "")
+            for b in team_proj.get("batters", []):
+                player_team_map[b.get("id")] = tname
+            for p in team_proj.get("pitchers", []):
+                player_team_map[p.get("id")] = tname
+        for p in matching_players:
+            if not p.get("team"):
+                p["team"] = player_team_map.get(p.get("id"), "")
+
     return {
         "teams": matching_teams[:10],
         "players": matching_players[:15],
