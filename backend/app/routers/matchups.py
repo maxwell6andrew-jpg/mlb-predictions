@@ -12,6 +12,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from app.models.matchup import predict_game
+from app.data.park_factors import get_park_factor
 
 limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/api")
@@ -97,6 +98,21 @@ async def matchups_today(request: Request):
         away_proj = cache.get_team(away_id)
         home_proj = cache.get_team(home_id)
 
+        # Park factor for home venue
+        park_factor = get_park_factor(home_id, "runs")
+
+        # Pitcher handedness (from MLB API metadata)
+        home_sp_hand = ""
+        away_sp_hand = ""
+        if home_sp_proj:
+            home_sp_hand = home_sp_proj.get("throws", home_sp_meta.get("pitchHand", {}).get("code", ""))
+        elif home_sp_meta:
+            home_sp_hand = home_sp_meta.get("pitchHand", {}).get("code", "")
+        if away_sp_proj:
+            away_sp_hand = away_sp_proj.get("throws", away_sp_meta.get("pitchHand", {}).get("code", ""))
+        elif away_sp_meta:
+            away_sp_hand = away_sp_meta.get("pitchHand", {}).get("code", "")
+
         pred = predict_game(
             away_team_id=away_id,
             home_team_id=home_id,
@@ -110,6 +126,9 @@ async def matchups_today(request: Request):
             home_sp_name=home_sp_name,
             lg_era=lg_era,
             lg_fip=lg_fip,
+            park_factor=park_factor,
+            home_sp_hand=home_sp_hand,
+            away_sp_hand=away_sp_hand,
         )
         pred["game_status"] = status
         pred["game_time"] = g.get("gameDate", "")

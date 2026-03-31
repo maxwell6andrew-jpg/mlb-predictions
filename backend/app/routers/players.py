@@ -144,9 +144,23 @@ async def get_player(request: Request, player_id: int):
         "throws": api_player.get("throws", ""),
     }
 
+    # Attach Statcast data if available
+    statcast_data = None
+    if projection.get("statcast_data"):
+        statcast_data = projection["statcast_data"]
+    else:
+        # Try direct lookup from Statcast cache
+        batter_sc = getattr(request.app.state, "batter_statcast", {})
+        pitcher_sc = getattr(request.app.state, "pitcher_statcast", {})
+        if is_pitcher and player_id in pitcher_sc:
+            statcast_data = pitcher_sc[player_id]
+        elif not is_pitcher and player_id in batter_sc:
+            statcast_data = batter_sc[player_id]
+
     return {
         "player": player_bio,
         "projection": projection,
         "historical": historical,
         "league_averages": league_avg,
+        "statcast": statcast_data,
     }

@@ -71,6 +71,9 @@ def predict_game(
     home_sp_name: str = "TBD",
     lg_era: float = 4.00,
     lg_fip: float = 4.00,
+    park_factor: float = 1.0,
+    home_sp_hand: str = "",
+    away_sp_hand: str = "",
 ) -> dict:
     """
     Predict a single game. Returns win probability for home team + key factors.
@@ -173,9 +176,50 @@ def predict_game(
                 })
 
     # -----------------------------------------------------------------------
-    # 6. Total run differential → win probability
+    # 6. Park factor adjustment
     # -----------------------------------------------------------------------
-    total_run_diff = sp_run_diff + ops_run_diff * 0.5 + bullpen_run_diff
+    park_run_adj = 0.0
+    if park_factor != 1.0:
+        # Park factor affects total run scoring — adjust run diff slightly
+        # A hitter's park (1.10) adds ~0.3 runs to total; this slightly benefits the home team
+        park_run_adj = (park_factor - 1.0) * 1.5  # ~0.15 runs per 0.10 park factor
+        factors.append({
+            "factor": "Park factor",
+            "value": f"{park_factor:.2f}x run environment",
+            "direction": "Hitter-friendly park" if park_factor > 1.05 else ("Pitcher-friendly park" if park_factor < 0.95 else "Neutral park"),
+            "impact": "high" if abs(park_factor - 1.0) > 0.10 else ("medium" if abs(park_factor - 1.0) > 0.03 else "low"),
+        })
+
+    # -----------------------------------------------------------------------
+    # 7. Platoon advantage
+    # -----------------------------------------------------------------------
+    platoon_run_adj = 0.0
+    if (home_sp_hand or away_sp_hand) and home_proj and away_proj:
+        from app.models.platoon_model import estimate_team_platoon_adjustment, describe_platoon_advantage
+
+        # Home lineup vs away SP
+        home_batters = home_proj.get("batters", [])
+        away_batters = away_proj.get("batters", [])
+
+        home_platoon = estimate_team_platoon_adjustment(home_batters, away_sp_hand) if away_sp_hand else 1.0
+        away_platoon = estimate_team_platoon_adjustment(away_batters, home_sp_hand) if home_sp_hand else 1.0
+
+        platoon_diff = home_platoon - away_platoon
+        platoon_run_adj = platoon_diff * 1.5  # convert OPS multiplier diff to runs
+
+        if abs(platoon_diff) > 0.01:
+            desc = describe_platoon_advantage(home_batters, away_sp_hand) if away_sp_hand else ""
+            factors.append({
+                "factor": "Platoon splits",
+                "value": f"Home lineup {home_platoon:.3f}x vs Away lineup {away_platoon:.3f}x",
+                "direction": desc or ("Home platoon advantage" if platoon_diff > 0 else "Away platoon advantage"),
+                "impact": "medium" if abs(platoon_diff) > 0.02 else "low",
+            })
+
+    # -----------------------------------------------------------------------
+    # 8. Total run differential → win probability
+    # -----------------------------------------------------------------------
+    total_run_diff = sp_run_diff + ops_run_diff * 0.5 + bullpen_run_diff + park_run_adj + platoon_run_adj
     adjustment = _win_prob_from_run_diff(total_run_diff) - 0.5  # centered adjustment
     home_win_prob = max(0.05, min(0.95, base_prob + adjustment * 0.5))
 

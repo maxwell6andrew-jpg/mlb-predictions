@@ -23,9 +23,11 @@ from app.data.lahman_loader import LahmanData
 from app.data.id_mapper import IDMapper
 from app.data.mlb_api_client import MLBApiClient
 from app.data.cache import ProjectionCache
+from app.data.statcast_client import StatcastClient
 from app.models.marcel_batting import MarcelBatting
 from app.models.marcel_pitching import MarcelPitching
 from app.models.team_regression import fit_team_model, predict_wins
+from app.models.statcast_adjustments import adjust_batting_projection, adjust_pitching_projection
 from app.config import LAHMAN_DIR, CHADWICK_DIR, PROJECTION_YEAR
 
 from app.routers import search, teams, players
@@ -147,6 +149,7 @@ async def _compute_team_projections(app):
                     if not proj:
                         proj = pitching_model.project(lahman_id)
                         if proj:
+                            proj["team_id"] = team_id
                             cache.set_pitching(lahman_id, proj)
                 if proj:
                     total_war += proj.get("war", 0)
@@ -154,6 +157,7 @@ async def _compute_team_projections(app):
                         "id": mlbam_id,
                         "name": proj.get("name", player["name"]),
                         "position": proj.get("position", pos),
+                        "throws": player.get("throws", proj.get("throws", "")),
                         "era": proj.get("era"),
                         "whip": proj.get("whip"),
                         "k_per_9": proj.get("k_per_9"),
@@ -166,6 +170,7 @@ async def _compute_team_projections(app):
                         "id": mlbam_id,
                         "name": player["name"],
                         "position": pos,
+                        "throws": player.get("throws", ""),
                         "era": None, "whip": None, "k_per_9": None, "hr_per_9": None, "ip": None,
                         "war": 0.0,
                     })
@@ -176,6 +181,7 @@ async def _compute_team_projections(app):
                     if not proj:
                         proj = batting_model.project(lahman_id)
                         if proj:
+                            proj["team_id"] = team_id
                             cache.set_batting(lahman_id, proj)
                 if proj:
                     total_war += proj.get("war", 0)
@@ -183,6 +189,7 @@ async def _compute_team_projections(app):
                         "id": mlbam_id,
                         "name": proj.get("name", player["name"]),
                         "position": proj.get("position", pos),
+                        "bats": player.get("bats", "R"),
                         "avg": proj.get("avg"),
                         "ops": proj.get("ops"),
                         "hr": proj.get("hr"),
@@ -193,6 +200,7 @@ async def _compute_team_projections(app):
                         "id": mlbam_id,
                         "name": player["name"],
                         "position": pos,
+                        "bats": player.get("bats", "R"),
                         "avg": None, "ops": None, "hr": None,
                         "war": 0.0,
                     })
@@ -321,6 +329,44 @@ async def lifespan(app: FastAPI):
     # 8. Sanity check all projections
     _run_sanity_checks(app)
 
+    # 9. Fetch Statcast data and apply adjustments to cached projections
+    print("Fetching Statcast data...")
+    statcast_client = StatcastClient()
+    app.state.statcast_client = statcast_client
+    try:
+        batter_sc = await statcast_client.fetch_batter_statcast(PROJECTION_YEAR - 1)
+        pitcher_sc = await statcast_client.fetch_pitcher_statcast(PROJECTION_YEAR - 1)
+        app.state.batter_statcast = batter_sc
+        app.state.pitcher_statcast = pitcher_sc
+        print(f"  Loaded {len(batter_sc)} batter + {len(pitcher_sc)} pitcher Statcast records")
+
+        # Apply Statcast adjustments to all cached projections
+        adjusted_b, adjusted_p = 0, 0
+        id_mapper_ref = app.state.id_mapper
+        for lahman_id, proj in list(cache.batting.items()):
+            mlbam_id = id_mapper_ref.lahman_to_mlbam(lahman_id)
+            sc_data = batter_sc.get(mlbam_id) if mlbam_id else None
+            team_id = proj.get("team_id")
+            adjusted = adjust_batting_projection(proj, sc_data, team_id=team_id)
+            cache.set_batting(lahman_id, adjusted)
+            if adjusted.get("statcast_adjusted"):
+                adjusted_b += 1
+
+        for lahman_id, proj in list(cache.pitching.items()):
+            mlbam_id = id_mapper_ref.lahman_to_mlbam(lahman_id)
+            sc_data = pitcher_sc.get(mlbam_id) if mlbam_id else None
+            team_id = proj.get("team_id")
+            adjusted = adjust_pitching_projection(proj, sc_data, team_id=team_id)
+            cache.set_pitching(lahman_id, adjusted)
+            if adjusted.get("statcast_adjusted"):
+                adjusted_p += 1
+
+        print(f"  Applied Statcast adjustments: {adjusted_b} batters, {adjusted_p} pitchers")
+    except Exception as e:
+        print(f"  Statcast loading failed (graceful degradation): {e}")
+        app.state.batter_statcast = {}
+        app.state.pitcher_statcast = {}
+
     elapsed = (datetime.now(timezone.utc) - start).seconds
     app.state.startup_time = datetime.now(timezone.utc).isoformat()
     print("=" * 60)
@@ -330,6 +376,7 @@ async def lifespan(app: FastAPI):
     yield
 
     await api_client.close()
+    await statcast_client.close()
 
 
 app = FastAPI(title="MLB Predictor", lifespan=lifespan)
