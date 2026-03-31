@@ -14,6 +14,11 @@ from app.data.park_factors import get_park_factor
 # Research (Carleton 2019, Sullivan 2021) shows 30-40% optimal for full-season Statcast
 BLEND_WEIGHT = 0.35
 
+# Stat-specific blend weights — xBA and barrel rate are more predictive than general Statcast
+BLEND_WEIGHT_AVG = 0.45   # xBA is highly predictive of future AVG
+BLEND_WEIGHT_HR = 0.40    # barrel rate is the single best HR predictor
+BLEND_WEIGHT_SLG = 0.40   # xSLG captures real power signal
+
 # League average Statcast benchmarks (2023-2025)
 LG_BARREL_RATE = 7.5   # percent
 LG_EXIT_VELO = 88.5    # mph
@@ -79,23 +84,32 @@ def adjust_batting_projection(
         # Adjust OBP and SLG toward expected values
         if abs(luck_gap) > 0.010:  # only adjust if gap is meaningful
             obp_adj = luck_gap * BLEND_WEIGHT * 0.8  # OBP is ~80% of wOBA signal
-            slg_adj = luck_gap * BLEND_WEIGHT * 1.2  # SLG captures more of the power component
+            slg_adj = luck_gap * BLEND_WEIGHT_SLG * 1.2  # SLG captures more of the power component
 
             old_obp = proj["obp"]
             old_slg = proj["slg"]
             proj["obp"] = round(proj["obp"] + obp_adj, 3)
             proj["slg"] = round(proj["slg"] + slg_adj, 3)
             proj["ops"] = round(proj["obp"] + proj["slg"], 3)
-            proj["avg"] = round(proj["avg"] + luck_gap * BLEND_WEIGHT * 0.5, 3)
+            proj["avg"] = round(proj["avg"] + luck_gap * BLEND_WEIGHT_AVG * 0.5, 3)
 
             adjustments["xwoba_luck"] = f"gap={luck_gap:+.3f}, OBP {old_obp}→{proj['obp']}, SLG {old_slg}→{proj['slg']}"
 
-    # 2. Barrel rate → HR adjustment
+    # 2. xBA direct blend → AVG correction
+    xba = statcast.get("xba", 0)
+    if xba > 0 and proj["avg"] > 0:
+        # Blend Marcel AVG toward Statcast xBA
+        old_avg = proj["avg"]
+        proj["avg"] = round(proj["avg"] * (1 - BLEND_WEIGHT_AVG) + xba * BLEND_WEIGHT_AVG, 3)
+        if abs(proj["avg"] - old_avg) > 0.001:
+            adjustments["xba_avg"] = f"xBA={xba:.3f}, AVG {old_avg:.3f}→{proj['avg']:.3f}"
+
+    # 3. Barrel rate → HR adjustment
     barrel_rate = statcast.get("barrel_rate", 0)
     if barrel_rate > 0:
         barrel_diff = barrel_rate - LG_BARREL_RATE  # positive = above average barrels
         # Each 1% above average barrel rate ≈ 2% more HR
-        hr_multiplier = 1.0 + (barrel_diff / LG_BARREL_RATE) * 0.15 * BLEND_WEIGHT
+        hr_multiplier = 1.0 + (barrel_diff / LG_BARREL_RATE) * 0.15 * BLEND_WEIGHT_HR
         hr_multiplier = max(0.80, min(hr_multiplier, 1.20))  # cap at ±20%
 
         old_hr = proj["hr"]
@@ -110,7 +124,7 @@ def adjust_batting_projection(
         ev_diff = exit_velo - LG_EXIT_VELO
         # High exit velo with low SLG = unlucky/due for correction
         if ev_diff > 2.0 and proj["slg"] < 0.430:
-            slg_boost = ev_diff * 0.002 * BLEND_WEIGHT
+            slg_boost = ev_diff * 0.002 * BLEND_WEIGHT_SLG
             proj["slg"] = round(proj["slg"] + slg_boost, 3)
             proj["ops"] = round(proj["obp"] + proj["slg"], 3)
             adjustments["exit_velo"] = f"{exit_velo:.1f} mph (+{ev_diff:.1f} vs lg), SLG boosted"
