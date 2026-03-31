@@ -266,13 +266,9 @@ app = FastAPI(title="MLB Predictor", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8502", "http://localhost:5173", "http://localhost:3000",
-        "https://mlbpredictit.com", "https://www.mlbpredictit.com",
-        "https://maxwell6andrew-jpg.github.io",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "OPTIONS"],
     allow_headers=["*"],
 )
 
