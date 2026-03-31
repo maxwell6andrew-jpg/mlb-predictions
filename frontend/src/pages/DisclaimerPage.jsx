@@ -97,7 +97,7 @@ export default function DisclaimerPage() {
       <Section title="California Residents">
         Under California Civil Code Section 1789.3, California users are entitled to the
         following consumer rights notice: This Site is provided by Andrew Maxwell. Complaints
-        may be sent to mlbpredictit@gmail.com. The Complaint Assistance Unit of the Division
+        may be sent to andrewmaxwellbusiness@gmail.com. The Complaint Assistance Unit of the Division
         of Consumer Services of the California Department of Consumer Affairs may be contacted
         in writing at 1625 North Market Blvd., Suite N 112, Sacramento, CA 95834, or by
         telephone at (800) 952-5210.
@@ -114,7 +114,7 @@ export default function DisclaimerPage() {
           fontSize: 14,
         }}>
           Andrew Maxwell<br />
-          mlbpredictit@gmail.com
+          andrewmaxwellbusiness@gmail.com
         </div>
       </Section>
     </div>

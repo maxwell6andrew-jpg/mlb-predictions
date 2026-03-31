@@ -119,7 +119,7 @@ export default function PrivacyPage() {
           fontSize: 14,
         }}>
           Andrew Maxwell<br />
-          mlbpredictit@gmail.com
+          andrewmaxwellbusiness@gmail.com
         </div>
       </Section>
     </div>

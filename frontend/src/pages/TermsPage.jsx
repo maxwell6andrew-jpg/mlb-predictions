@@ -138,7 +138,7 @@ export default function TermsPage() {
           fontSize: 14,
         }}>
           Andrew Maxwell<br />
-          mlbpredictit@gmail.com
+          andrewmaxwellbusiness@gmail.com
         </div>
       </Section>
     </div>
