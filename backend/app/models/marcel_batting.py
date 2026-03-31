@@ -13,10 +13,10 @@ from app.config import PROJECTION_YEAR
 
 # Regression constants — how much PA is needed before we trust the player's rate
 REGRESSION = {
-    "avg": 1200,
+    "avg": 1000,
     "obp": 900,
     "slg": 1000,
-    "hr_rate": 1000,
+    "hr_rate": 800,
     "bb_rate": 800,
     "k_rate": 400,
     "sb_rate": 1200,
