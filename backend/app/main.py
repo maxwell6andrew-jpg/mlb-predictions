@@ -221,24 +221,20 @@ async def lifespan(app: FastAPI):
     # 3. Build ID mapper (download Chadwick register if missing)
     chadwick_path = CHADWICK_DIR / "people.csv"
     if not chadwick_path.exists():
-        import urllib.request
-        import pandas as _pd
-        print("  Downloading Chadwick register...")
+        import urllib.request, zipfile, io, pandas as _pd
+        print("  Downloading Chadwick register (zip)...")
         CHADWICK_DIR.mkdir(parents=True, exist_ok=True)
-        base = "https://raw.githubusercontent.com/chadwickbureau/register/master/data/people-{}.csv"
-        frames = []
-        for suffix in list("0123456789") + list("abcdefghijklmnopqrstuvwxyz"):
-            try:
-                url = base.format(suffix)
-                df = _pd.read_csv(url, low_memory=False)
-                frames.append(df)
-            except Exception:
-                break
-        if frames:
+        try:
+            url = "https://github.com/chadwickbureau/register/archive/refs/heads/master.zip"
+            with urllib.request.urlopen(url, timeout=120) as resp:
+                zf = zipfile.ZipFile(io.BytesIO(resp.read()))
+            parts = [n for n in zf.namelist() if "/data/people-" in n and n.endswith(".csv")]
+            frames = [_pd.read_csv(io.BytesIO(zf.read(n)), low_memory=False) for n in parts]
             _pd.concat(frames, ignore_index=True).to_csv(chadwick_path, index=False)
-            print(f"  Downloaded {len(frames)} Chadwick register files.")
-        else:
-            print("  WARNING: Could not download Chadwick register — ID mapping will be limited")
+            print(f"  Downloaded {len(frames)} Chadwick register parts.")
+        except Exception as e:
+            print(f"  WARNING: Could not download Chadwick register ({e}) — ID mapping limited")
+            CHADWICK_DIR.mkdir(parents=True, exist_ok=True)
             chadwick_path.touch()
     id_mapper = IDMapper(chadwick_path, lahman.people)
     app.state.id_mapper = id_mapper
