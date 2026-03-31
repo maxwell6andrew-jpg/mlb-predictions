@@ -220,7 +220,7 @@ async def lifespan(app: FastAPI):
 
     # 3. Build ID mapper (download Chadwick register if missing)
     chadwick_path = CHADWICK_DIR / "people.csv"
-    if not chadwick_path.exists():
+    if not chadwick_path.exists() or chadwick_path.stat().st_size < 1000:
         import urllib.request, zipfile, io, pandas as _pd
         print("  Downloading Chadwick register (zip)...")
         CHADWICK_DIR.mkdir(parents=True, exist_ok=True)
