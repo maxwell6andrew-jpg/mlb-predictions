@@ -17,51 +17,81 @@ REGRESSION = {
 }
 
 WEIGHTS = [5, 4, 3]
-PEAK_AGE = 27
 
+# Stat-specific peak ages for pitchers (research: Bradbury 2009, Lichtman 2014)
+# Velocity peaks early (~25), command/K rate peaks later (~28), ERA peaks ~26-27
+PITCHER_PEAK_AGES = {
+    "era": 26,       # ERA peaks early — velocity matters most
+    "whip": 27,
+    "k_per_9": 28,   # Strikeout ability peaks later (pitch mix development)
+    "bb_per_9": 29,  # Command improves with experience
+    "hr_per_9": 27,
+}
+DEFAULT_PEAK = 27
+
+# Role-specific decline curves: (gain_pre, loss_1_3, loss_4_6, loss_7+)
 AGING = {
     "SP": (0.003, -0.005, -0.010, -0.018),
     "RP": (0.002, -0.004, -0.008, -0.015),
 }
 DEFAULT_AGING = (0.003, -0.005, -0.010, -0.016)
 
+# K/9 declines more slowly (pitch mix/deception compensates for velo loss)
+K_RATE_AGING = (0.004, -0.002, -0.005, -0.010)
+# BB/9 improves longer (command is a learned skill)
+BB_RATE_AGING = (0.005, -0.001, -0.003, -0.008)
 
-def aging_multiplier(age: int, role: str) -> float:
-    """For pitchers, higher = worse for ERA/WHIP, so we invert the effect."""
+
+def aging_multiplier(age: int, role: str, stat: str = "era") -> float:
+    """For pitchers, higher = worse for ERA/WHIP/BB, so we invert the effect."""
+    peak = PITCHER_PEAK_AGES.get(stat, DEFAULT_PEAK)
     curve = AGING.get(role, DEFAULT_AGING)
-    gain_pre, loss_28_30, loss_31_33, loss_34plus = curve
+    gain_pre, loss_1_3, loss_4_6, loss_7plus = curve
 
-    if age <= PEAK_AGE:
-        return 1.0 - gain_pre * (PEAK_AGE - age)  # Younger = slightly worse (developing)
+    if age <= peak:
+        return 1.0 - gain_pre * (peak - age)  # Younger = slightly worse (developing)
 
     mult = 1.0
-    if age > PEAK_AGE:
-        years_28_30 = min(age, 30) - PEAK_AGE
-        mult += abs(loss_28_30) * years_28_30  # ERA goes up
-    if age > 30:
-        years_31_33 = min(age, 33) - 30
-        mult += abs(loss_31_33) * years_31_33
-    if age > 33:
-        years_34plus = age - 33
-        mult += abs(loss_34plus) * years_34plus
+    years_past = age - peak
+    y1 = min(years_past, 3)
+    mult += abs(loss_1_3) * y1
+    if years_past > 3:
+        y2 = min(years_past - 3, 3)
+        mult += abs(loss_4_6) * y2
+    if years_past > 6:
+        y3 = years_past - 6
+        mult += abs(loss_7plus) * y3
 
     return min(mult, 1.8)
 
 
-def aging_multiplier_positive(age: int, role: str) -> float:
-    """For stats where higher is better (K/9)."""
-    curve = AGING.get(role, DEFAULT_AGING)
-    gain_pre, loss_28_30, loss_31_33, loss_34plus = curve
+def aging_multiplier_positive(age: int, role: str, stat: str = "k_per_9") -> float:
+    """For stats where higher is better (K/9). Uses stat-specific curves."""
+    peak = PITCHER_PEAK_AGES.get(stat, 28)
 
-    if age <= PEAK_AGE:
-        return 1.0 + gain_pre * (PEAK_AGE - age)
+    if stat == "k_per_9":
+        curve = K_RATE_AGING
+    elif stat == "bb_per_9":
+        curve = BB_RATE_AGING
+    else:
+        curve = AGING.get(role, DEFAULT_AGING)
+
+    gain_pre, loss_1_3, loss_4_6, loss_7plus = curve
+
+    if age <= peak:
+        return 1.0 + gain_pre * (peak - age)
 
     mult = 1.0
-    if age > PEAK_AGE:
-        mult += loss_28_30 * min(age, 30) - PEAK_AGE if age > PEAK_AGE else 0
-    # Simplified: K/9 drops less than other stats
-    years_past = age - PEAK_AGE
-    mult = 1.0 - 0.003 * years_past
+    years_past = age - peak
+    y1 = min(years_past, 3)
+    mult += loss_1_3 * y1
+    if years_past > 3:
+        y2 = min(years_past - 3, 3)
+        mult += loss_4_6 * y2
+    if years_past > 6:
+        y3 = years_past - 6
+        mult += loss_7plus * y3
+
     return max(mult, 0.6)
 
 
@@ -136,13 +166,12 @@ class MarcelPitching:
             lg_rate = self.league_avg.get(stat, 0)
             regressed[stat] = player_rate * reliability + lg_rate * (1 - reliability)
 
-        # Step 3: Aging
-        era_mult = aging_multiplier(age, role)
-        regressed["era"] *= era_mult
-        regressed["whip"] *= era_mult
-        regressed["bb_per_9"] *= era_mult
-        regressed["hr_per_9"] *= era_mult
-        regressed["k_per_9"] *= aging_multiplier_positive(age, role)
+        # Step 3: Stat-specific aging
+        regressed["era"] *= aging_multiplier(age, role, "era")
+        regressed["whip"] *= aging_multiplier(age, role, "whip")
+        regressed["bb_per_9"] *= aging_multiplier(age, role, "bb_per_9")
+        regressed["hr_per_9"] *= aging_multiplier(age, role, "hr_per_9")
+        regressed["k_per_9"] *= aging_multiplier_positive(age, role, "k_per_9")
 
         # Step 4: Playing time
         projected_ip = project_playing_time(ip_list, age, is_starter)

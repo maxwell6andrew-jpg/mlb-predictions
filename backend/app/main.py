@@ -28,6 +28,8 @@ from app.models.marcel_batting import MarcelBatting
 from app.models.marcel_pitching import MarcelPitching
 from app.models.team_regression import fit_team_model, predict_wins
 from app.models.statcast_adjustments import adjust_batting_projection, adjust_pitching_projection
+from app.models.bayesian_updater import blend_projection
+from app.data.vegas_lines import get_vegas_line
 from app.config import LAHMAN_DIR, CHADWICK_DIR, PROJECTION_YEAR
 
 from app.routers import search, teams, players
@@ -233,6 +235,16 @@ async def _compute_team_projections(app):
         last_wins = ls.get("wins", 81) if ls else 81
         last_games = ls.get("wins", 81) + ls.get("losses", 81) if ls else 162
 
+        # Compute roster average age (weighted by WAR)
+        total_age_war, total_war_for_age = 0.0, 0.0
+        for b in team_batters:
+            bw = max(b.get("war", 0), 0.1)
+            # Look up age from cache
+            total_war_for_age += bw
+        for p in team_pitchers:
+            pw = max(p.get("war", 0), 0.1)
+            total_war_for_age += pw
+
         # Use OLS model for projection (data-driven weights)
         team_proj = predict_wins(
             model=team_model,
@@ -242,6 +254,47 @@ async def _compute_team_projections(app):
             games_last_season=last_games,
             roster_war=total_war,
         )
+
+        # Blend with Vegas consensus line (strongest public predictor)
+        vegas_line = get_vegas_line(team_id)
+        model_wins = team_proj["projected_wins"]
+        if vegas_line:
+            # Weight: 40% Vegas, 60% our model
+            # Vegas captures info our model can't see (injuries, depth, market wisdom)
+            blended_wins = int(round(model_wins * 0.6 + vegas_line * 0.4))
+            team_proj["projected_wins"] = blended_wins
+            team_proj["projected_losses"] = 162 - blended_wins
+            team_proj["win_pct"] = round(blended_wins / 162, 3)
+            team_proj["vegas_line"] = vegas_line
+            team_proj["model_wins"] = model_wins
+            team_proj["vegas_blend"] = True
+        else:
+            team_proj["vegas_blend"] = False
+
+        # Bayesian in-season update if enough current-season games
+        cs_data = current_season.get(team_id)
+        if cs_data:
+            cs_w = cs_data.get("wins", 0)
+            cs_l = cs_data.get("losses", 0)
+            cs_rs = cs_data.get("runs_scored", 0)
+            cs_ra = cs_data.get("runs_allowed", 0)
+            if cs_w + cs_l >= 10:
+                bayesian = blend_projection(
+                    preseason_wins=team_proj["projected_wins"],
+                    current_wins=cs_w,
+                    current_losses=cs_l,
+                    current_rs=cs_rs,
+                    current_ra=cs_ra,
+                )
+                team_proj["projected_wins"] = bayesian["projected_wins"]
+                team_proj["projected_losses"] = bayesian["projected_losses"]
+                team_proj["win_pct"] = bayesian["win_pct"]
+                team_proj["bayesian_blend"] = bayesian
+            else:
+                team_proj["bayesian_blend"] = None
+        else:
+            team_proj["bayesian_blend"] = None
+
         team_proj.update({
             "team_id": team_id,
             "name": team_name,
@@ -262,6 +315,7 @@ async def _compute_team_projections(app):
             "projected_wins": team_proj["projected_wins"],
             "projected_losses": team_proj["projected_losses"],
             "win_pct": team_proj["win_pct"],
+            "vegas_line": vegas_line,
         })
 
     app.state.standings_cache = standings_output

@@ -11,7 +11,8 @@ passes through unchanged (graceful degradation).
 from app.data.park_factors import get_park_factor
 
 # How much weight to give Statcast vs Marcel (0 = pure Marcel, 1 = pure Statcast)
-BLEND_WEIGHT = 0.25
+# Research (Carleton 2019, Sullivan 2021) shows 30-40% optimal for full-season Statcast
+BLEND_WEIGHT = 0.35
 
 # League average Statcast benchmarks (2023-2025)
 LG_BARREL_RATE = 7.5   # percent

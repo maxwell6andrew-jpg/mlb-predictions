@@ -25,7 +25,20 @@ REGRESSION = {
 # Year weights: most recent = 5, -1 = 4, -2 = 3
 WEIGHTS = [5, 4, 3]
 
-# Aging curves by position: (gain_per_year_before_peak, loss_28-30, loss_31-33, loss_34+)
+# Stat-specific peak ages (research: Lichtman 2014, JC Bradbury 2010, Hicks/Judge 2020)
+# Power peaks later (~28-29), speed earliest (~25-26), contact/OBP at 27
+PEAK_AGES = {
+    "hr_rate": 29,
+    "slg": 28,
+    "sb_rate": 25,
+    "avg": 27,
+    "obp": 27,
+    "bb_rate": 28,  # plate discipline improves with experience
+    "k_rate": 26,   # K rate improves early then plateaus
+}
+DEFAULT_PEAK = 27
+
+# Position-specific decline rates: (gain_per_year_before_peak, loss_28-30, loss_31-33, loss_34+)
 AGING = {
     "C":  (0.003, -0.008, -0.015, -0.022),
     "SS": (0.004, -0.006, -0.012, -0.018),
@@ -39,29 +52,45 @@ AGING = {
     "OF": (0.003, -0.005, -0.010, -0.016),
 }
 DEFAULT_AGING = (0.003, -0.005, -0.010, -0.016)
-PEAK_AGE = 27
+
+# Speed declines faster than power
+SPEED_AGING = (0.005, -0.010, -0.018, -0.028)
+POWER_AGING = (0.002, -0.003, -0.007, -0.012)
+DISCIPLINE_AGING = (0.004, -0.003, -0.006, -0.010)  # walk rate holds longer
 
 
-def aging_multiplier(age: int, position: str) -> float:
-    curve = AGING.get(position, DEFAULT_AGING)
+def aging_multiplier(age: int, position: str, stat: str = "avg") -> float:
+    """Stat-specific aging curve with position modifiers."""
+    peak = PEAK_AGES.get(stat, DEFAULT_PEAK)
+
+    # Choose curve based on stat type
+    if stat in ("sb_rate",):
+        curve = SPEED_AGING
+    elif stat in ("hr_rate", "slg"):
+        curve = POWER_AGING
+    elif stat in ("bb_rate",):
+        curve = DISCIPLINE_AGING
+    else:
+        curve = AGING.get(position, DEFAULT_AGING)
+
     gain_pre, loss_28_30, loss_31_33, loss_34plus = curve
 
-    if age <= PEAK_AGE:
-        return 1.0 + gain_pre * (PEAK_AGE - age)
+    if age <= peak:
+        return 1.0 + gain_pre * (peak - age)
 
     mult = 1.0
-    # Ages 28-30
-    years_28_30 = min(age, 30) - PEAK_AGE
-    if years_28_30 > 0:
-        mult += loss_28_30 * years_28_30
-    # Ages 31-33
-    if age > 30:
-        years_31_33 = min(age, 33) - 30
-        mult += loss_31_33 * years_31_33
-    # Ages 34+
-    if age > 33:
-        years_34plus = age - 33
-        mult += loss_34plus * years_34plus
+    years_past_peak = age - peak
+    # First 3 years post-peak
+    y1 = min(years_past_peak, 3)
+    mult += loss_28_30 * y1
+    # Years 4-6 post-peak
+    if years_past_peak > 3:
+        y2 = min(years_past_peak - 3, 3)
+        mult += loss_31_33 * y2
+    # 7+ years post-peak
+    if years_past_peak > 6:
+        y3 = years_past_peak - 6
+        mult += loss_34plus * y3
 
     return max(mult, 0.5)
 
@@ -129,9 +158,9 @@ class MarcelBatting:
             lg_rate = self.league_avg.get(stat, 0)
             regressed[stat] = player_rate * reliability + lg_rate * (1 - reliability)
 
-        # Step 3: Aging adjustment
-        age_mult = aging_multiplier(age, position)
+        # Step 3: Stat-specific aging adjustment
         for stat in regressed:
+            age_mult = aging_multiplier(age, position, stat)
             regressed[stat] *= age_mult
 
         # Step 4: Project playing time
