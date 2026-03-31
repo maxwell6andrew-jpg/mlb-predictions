@@ -2,6 +2,8 @@
 
 Same algorithm as batting but uses BFP (batters faced) for weighting
 and pitching-specific stats.
+
+Enhanced with adaptive shrinkage for pitchers with < 3 years MLB experience.
 """
 
 import pandas as pd
@@ -17,6 +19,12 @@ REGRESSION = {
 }
 
 WEIGHTS = [5, 4, 3]
+
+# Experience-based regression scaling (matches batting model)
+EXPERIENCE_REGRESSION_SCALE = {
+    1: 0.70,
+    2: 0.85,
+}
 
 # Stat-specific peak ages for pitchers (research: Bradbury 2009, Lichtman 2014)
 # Velocity peaks early (~25), command/K rate peaks later (~28), ERA peaks ~26-27
@@ -95,16 +103,31 @@ def aging_multiplier_positive(age: int, role: str, stat: str = "k_per_9") -> flo
     return max(mult, 0.6)
 
 
-def project_playing_time(ip_history: list[float], age: int, is_starter: bool) -> float:
-    while len(ip_history) < 3:
-        ip_history.append(0)
+def project_playing_time(ip_history: list[float], age: int, is_starter: bool, n_real_years: int = 3) -> float:
+    """Project IP using only real seasons — no zero-padding."""
+    real_ip = [(ip, WEIGHTS[i]) for i, ip in enumerate(ip_history) if ip > 0]
+    if not real_ip:
+        return 150.0 if is_starter else 55.0
 
-    weighted = sum(ip * w for ip, w in zip(ip_history, WEIGHTS)) / sum(WEIGHTS)
+    weighted = sum(ip * w for ip, w in real_ip) / sum(w for _, w in real_ip)
     baseline = 150.0 if is_starter else 55.0
-    projected = weighted * 0.8 + baseline * 0.2
+
+    if n_real_years >= 3:
+        regress_pct = 0.20
+    elif n_real_years == 2:
+        regress_pct = 0.15
+    else:
+        regress_pct = 0.10
+
+    projected = weighted * (1 - regress_pct) + baseline * regress_pct
 
     if age > 33:
         projected *= max(0.5, 1.0 - 0.05 * (age - 33))
+
+    # Floor: if most recent season was 150+ IP (starter), project at least 140
+    most_recent = ip_history[0] if ip_history else 0
+    if is_starter and most_recent >= 150:
+        projected = max(projected, 140)
 
     max_ip = 220.0 if is_starter else 80.0
     return min(max(projected, 20), max_ip)
@@ -134,18 +157,21 @@ class MarcelPitching:
         is_starter = total_gs / max(total_g, 1) > 0.5
         role = "SP" if is_starter else "RP"
 
-        # Step 1: Weighted averages
+        # Step 1: Weighted averages (only real seasons)
         rates = self._weighted_rates(history)
         if rates is None:
             return None
 
-        # Get IP history for playing time
+        # Get IP history
         ip_list = []
         for _, row in history.iterrows():
             ipouts = row.get("IPouts", 0)
             ip_list.append(ipouts / 3)
 
-        # Compute PA-weighted BFP for regression denominator
+        # Count real MLB years
+        n_real_years = sum(1 for ip in ip_list if ip > 0)
+
+        # Compute BFP using ONLY real seasons (no zero-padding)
         bfp_list = []
         for _, row in history.iterrows():
             bfp = row.get("BFP", 0)
@@ -154,14 +180,17 @@ class MarcelPitching:
                 bfp = int(ipouts / 3 * 4.3)
             bfp_list.append(bfp)
 
-        n = len(bfp_list)
-        w = WEIGHTS[:n]
-        weighted_bfp = sum(b * wt for b, wt in zip(bfp_list, w)) / sum(w) * n if n > 0 else 0
+        real_bfp = [(bfp, WEIGHTS[i]) for i, bfp in enumerate(bfp_list) if bfp > 0]
+        if not real_bfp:
+            return None
+        weighted_bfp = sum(b * w for b, w in real_bfp) / sum(w for _, w in real_bfp) * n_real_years
 
-        # Step 2: Regress toward league mean
+        # Step 2: Regress toward league mean with experience-scaled constants
+        reg_scale = EXPERIENCE_REGRESSION_SCALE.get(n_real_years, 1.0)
         regressed = {}
         for stat, reg_const in REGRESSION.items():
-            reliability = weighted_bfp / (weighted_bfp + reg_const)
+            scaled_const = reg_const * reg_scale
+            reliability = weighted_bfp / (weighted_bfp + scaled_const)
             player_rate = rates.get(stat, self.league_avg.get(stat, 0))
             lg_rate = self.league_avg.get(stat, 0)
             regressed[stat] = player_rate * reliability + lg_rate * (1 - reliability)
@@ -173,8 +202,8 @@ class MarcelPitching:
         regressed["hr_per_9"] *= aging_multiplier(age, role, "hr_per_9")
         regressed["k_per_9"] *= aging_multiplier_positive(age, role, "k_per_9")
 
-        # Step 4: Playing time
-        projected_ip = project_playing_time(ip_list, age, is_starter)
+        # Step 4: Playing time (experience-aware)
+        projected_ip = project_playing_time(ip_list, age, is_starter, n_real_years)
 
         # Convert to counting stats
         era = regressed["era"]
@@ -193,8 +222,6 @@ class MarcelPitching:
         sv = 0 if is_starter else int(projected_ip / 3)
 
         # WAR via FIP
-        # FIP = (13*HR + 3*BB - 2*K) / IP + cFIP
-        # cFIP is computed from LEAGUE totals so it doesn't cancel out
         lg_era = self.league_avg.get("era", 4.0)
         lg_hr9 = self.league_avg.get("hr_per_9", 1.2)
         lg_bb9 = self.league_avg.get("bb_per_9", 3.2)
@@ -204,7 +231,6 @@ class MarcelPitching:
         player_fip_component = (13 * hr_allowed + 3 * bb - 2 * so) / max(projected_ip, 1)
         fip = player_fip_component + cfip
 
-        # WAR = (lg_FIP - player_FIP) / runs_per_win * (IP/9) + replacement_level
         replacement_level = 0.3 * (projected_ip / (180 if is_starter else 60))
         war = round((lg_era - fip) / 10 * (projected_ip / 9) + replacement_level, 1)
 
@@ -216,6 +242,7 @@ class MarcelPitching:
             "age": age,
             "position": role,
             "type": "pitching",
+            "mlb_years": n_real_years,
             "projected_ip": round(projected_ip, 1),
             "era": round(era, 2),
             "whip": round(whip, 2),
@@ -232,6 +259,7 @@ class MarcelPitching:
         }
 
     def _weighted_rates(self, history: pd.DataFrame) -> dict | None:
+        """Only includes seasons with real IP — no zero-padding dilution."""
         total_weighted_bfp = 0
         weighted_sums = {k: 0.0 for k in REGRESSION}
 

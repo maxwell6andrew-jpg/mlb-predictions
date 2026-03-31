@@ -5,6 +5,11 @@ The Marcel method (Tom Tango) uses:
 2. Regression toward league mean
 3. Aging curve adjustment
 4. Playing time projection
+
+Enhanced with adaptive shrinkage for players with < 3 years MLB experience:
+- Rate stats computed only from actual seasons (no zero-padding dilution)
+- Regression constants scaled by experience years (James-Stein principle)
+- Playing time floor for proven starters
 """
 
 import pandas as pd
@@ -12,6 +17,7 @@ from app.data.lahman_loader import LahmanData
 from app.config import PROJECTION_YEAR
 
 # Regression constants — how much PA is needed before we trust the player's rate
+# These are the BASE constants for 3+ year veterans
 REGRESSION = {
     "avg": 1000,
     "obp": 900,
@@ -21,6 +27,15 @@ REGRESSION = {
     "k_rate": 400,
     "sb_rate": 1200,
 }
+
+# Experience-based regression scaling (James-Stein adaptive shrinkage)
+# Fewer MLB years → less regression needed because we removed zero-padding
+# (zero-padding was providing implicit regression that is no longer present)
+EXPERIENCE_REGRESSION_SCALE = {
+    1: 0.70,   # 1 MLB year: 70% of base constant
+    2: 0.85,   # 2 MLB years: 85% of base constant
+}
+# 3+ years: 100% (standard Marcel)
 
 # Year weights: most recent = 5, -1 = 4, -2 = 3
 WEIGHTS = [5, 4, 3]
@@ -95,27 +110,44 @@ def aging_multiplier(age: int, position: str, stat: str = "avg") -> float:
     return max(mult, 0.5)
 
 
-def project_playing_time(pa_history: list[int], age: int) -> int:
-    """Project PA using weighted average regressed toward a baseline.
+def project_playing_time(pa_history: list[int], age: int, n_real_years: int = 3) -> int:
+    """Project PA using weighted average of REAL seasons only.
 
-    Regulars (500+ weighted PA) regress toward 550 PA instead of 400,
-    preventing systematic underestimation of counting stats for everyday players.
+    Key changes from vanilla Marcel:
+    - Only uses actual MLB seasons (no zero-padding)
+    - Regulars (500+ PA last year) get a 500 PA floor
+    - Regulars regress toward 550, part-timers toward 400
     """
     if not pa_history:
         return 400
 
-    # Pad to 3 years
-    while len(pa_history) < 3:
-        pa_history.append(0)
+    # Only use real (non-zero) seasons for the weighted average
+    real_pa = [(pa, WEIGHTS[i]) for i, pa in enumerate(pa_history) if pa > 0]
+    if not real_pa:
+        return 400
 
-    weighted = sum(pa * w for pa, w in zip(pa_history, WEIGHTS)) / sum(WEIGHTS)
+    weighted = sum(pa * w for pa, w in real_pa) / sum(w for _, w in real_pa)
 
     # Regulars regress toward 550; part-timers toward 400
     baseline = 550 if weighted >= 500 else 400
-    projected = weighted * 0.8 + baseline * 0.2
+
+    # Less regression for players with fewer years (they don't need the extra penalty)
+    if n_real_years >= 3:
+        regress_pct = 0.20
+    elif n_real_years == 2:
+        regress_pct = 0.15
+    else:
+        regress_pct = 0.10  # 1-year players: 90% their actual PT, 10% baseline
+
+    projected = weighted * (1 - regress_pct) + baseline * regress_pct
 
     if age > 33:
         projected *= max(0.5, 1.0 - 0.05 * (age - 33))
+
+    # Floor: if most recent season was 500+ PA, project at least 500
+    most_recent_pa = pa_history[0] if pa_history else 0
+    if most_recent_pa >= 500:
+        projected = max(projected, 500)
 
     return int(min(max(projected, 100), 700))
 
@@ -140,13 +172,12 @@ class MarcelBatting:
         position = self.lahman.get_primary_position(lahman_id)
         name = f"{player_info['name_first']} {player_info['name_last']}"
 
-        # Step 1: Weighted averages
+        # Step 1: Weighted averages (only uses real seasons — no zero dilution)
         rates = self._weighted_rates(history)
         if rates is None:
             return None
 
-        pa_history = history["AB"].tolist()  # Approximate PA with AB for simplicity
-        # Add BB + HBP for true PA
+        # Build PA list from actual history
         if "BB" in history.columns:
             pa_list = []
             for _, row in history.iterrows():
@@ -155,12 +186,21 @@ class MarcelBatting:
         else:
             pa_list = [int(x) for x in history["AB"].tolist()]
 
-        weighted_pa = sum(pa * w for pa, w in zip(pa_list, WEIGHTS[:len(pa_list)])) / sum(WEIGHTS[:len(pa_list)]) * len(pa_list)
+        # Count real MLB years (non-zero PA)
+        n_real_years = sum(1 for pa in pa_list if pa > 0)
 
-        # Step 2: Regress toward league mean
+        # Compute weighted PA using ONLY real seasons (no zero-padding)
+        real_pa_weighted = [(pa, WEIGHTS[i]) for i, pa in enumerate(pa_list) if pa > 0]
+        if not real_pa_weighted:
+            return None
+        weighted_pa = sum(pa * w for pa, w in real_pa_weighted) / sum(w for _, w in real_pa_weighted) * n_real_years
+
+        # Step 2: Regress toward league mean with experience-scaled constants
+        reg_scale = EXPERIENCE_REGRESSION_SCALE.get(n_real_years, 1.0)
         regressed = {}
         for stat, reg_const in REGRESSION.items():
-            reliability = weighted_pa / (weighted_pa + reg_const)
+            scaled_const = reg_const * reg_scale
+            reliability = weighted_pa / (weighted_pa + scaled_const)
             player_rate = rates.get(stat, self.league_avg.get(stat, 0))
             lg_rate = self.league_avg.get(stat, 0)
             regressed[stat] = player_rate * reliability + lg_rate * (1 - reliability)
@@ -170,8 +210,8 @@ class MarcelBatting:
             age_mult = aging_multiplier(age, position, stat)
             regressed[stat] *= age_mult
 
-        # Step 4: Project playing time
-        projected_pa = project_playing_time(pa_list, age)
+        # Step 4: Project playing time (experience-aware)
+        projected_pa = project_playing_time(pa_list, age, n_real_years)
 
         # Convert rates to counting stats
         avg = regressed["avg"]
@@ -203,6 +243,7 @@ class MarcelBatting:
             "age": age,
             "position": position,
             "type": "batting",
+            "mlb_years": n_real_years,
             "projected_pa": projected_pa,
             "avg": round(avg, 3),
             "obp": round(obp, 3),
@@ -222,7 +263,11 @@ class MarcelBatting:
         }
 
     def _weighted_rates(self, history: pd.DataFrame) -> dict | None:
-        """Compute weighted rate stats from batting history."""
+        """Compute weighted rate stats from batting history.
+
+        Only includes seasons with actual PA — zero-PA seasons are skipped,
+        not counted. This prevents dilution of rate stats for young players.
+        """
         total_weighted_pa = 0
         weighted_sums = {k: 0.0 for k in REGRESSION}
 
