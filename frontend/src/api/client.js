@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const BACKEND = import.meta.env.VITE_API_URL || ''
+const BACKEND = import.meta.env.VITE_API_URL || 'https://mlb-predictions.onrender.com'
 
 const api = axios.create({
   baseURL: `${BACKEND}/api`,
