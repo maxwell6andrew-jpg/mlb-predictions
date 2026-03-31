@@ -318,15 +318,21 @@ def predict_wins(
         x = np.array([feature_map.get(n, 0.0) for n in ols.feature_names])
         base_wins = float(x @ ols.coef)
 
-        # Add roster WAR contribution (calibrated coefficient)
-        war_adjustment = roster_war * model.roster_war_coef
+        # WAR is NOT added to the Pythagorean-based projection — that would
+        # double-count talent already reflected in RS/RA.  Instead, WAR is
+        # used only as a *differential* signal: how far above the league-
+        # average roster WAR (~18) is this team?  Scale by a small coefficient
+        # to capture roster-quality edge not visible in prior-year RS/RA.
+        lg_avg_war = 18.0
+        war_adjustment = (roster_war - lg_avg_war) * model.roster_war_coef
         projected_wins_raw = base_wins + war_adjustment
     else:
         # Fallback: manual weights
         pyth_wins = pyth_pct * 162
         regressed = last_season_wins * 0.6 + 81 * 0.4
         projected_wins_raw = 0.55 * pyth_wins + 0.45 * regressed
-        war_adjustment = roster_war * 0.75
+        lg_avg_war = 18.0
+        war_adjustment = (roster_war - lg_avg_war) * 0.75
         projected_wins_raw += war_adjustment
 
     projected_wins = int(round(max(40, min(projected_wins_raw, 120))))
