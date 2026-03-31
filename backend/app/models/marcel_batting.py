@@ -96,7 +96,11 @@ def aging_multiplier(age: int, position: str, stat: str = "avg") -> float:
 
 
 def project_playing_time(pa_history: list[int], age: int) -> int:
-    """Project PA using weighted average regressed toward 400."""
+    """Project PA using weighted average regressed toward a baseline.
+
+    Regulars (500+ weighted PA) regress toward 550 PA instead of 400,
+    preventing systematic underestimation of counting stats for everyday players.
+    """
     if not pa_history:
         return 400
 
@@ -105,7 +109,10 @@ def project_playing_time(pa_history: list[int], age: int) -> int:
         pa_history.append(0)
 
     weighted = sum(pa * w for pa, w in zip(pa_history, WEIGHTS)) / sum(WEIGHTS)
-    projected = weighted * 0.8 + 400 * 0.2
+
+    # Regulars regress toward 550; part-timers toward 400
+    baseline = 550 if weighted >= 500 else 400
+    projected = weighted * 0.8 + baseline * 0.2
 
     if age > 33:
         projected *= max(0.5, 1.0 - 0.05 * (age - 33))

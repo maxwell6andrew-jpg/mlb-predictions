@@ -421,6 +421,67 @@ async def lifespan(app: FastAPI):
         app.state.batter_statcast = {}
         app.state.pitcher_statcast = {}
 
+    # 10. League-total calibration — scale HR and AVG so league totals match reality
+    print("Applying league calibration scalars...")
+    try:
+        # Actual 2025 MLB totals (30 teams): ~5,694 HR, league AVG ~.248
+        ACTUAL_LEAGUE_HR = 5694
+        ACTUAL_LEAGUE_AVG = 0.248
+
+        total_proj_hr = 0
+        total_proj_hits = 0
+        total_proj_ab = 0
+        batter_count = 0
+
+        for lahman_id, proj in cache.batting.items():
+            total_proj_hr += proj.get("hr", 0)
+            pa = proj.get("projected_pa", 0)
+            avg = proj.get("avg", 0)
+            ab = int(pa * 0.89)
+            total_proj_hits += int(avg * ab)
+            total_proj_ab += ab
+            batter_count += 1
+
+        proj_league_avg = total_proj_hits / total_proj_ab if total_proj_ab > 0 else 0.248
+
+        hr_scalar = ACTUAL_LEAGUE_HR / total_proj_hr if total_proj_hr > 0 else 1.0
+        avg_scalar = ACTUAL_LEAGUE_AVG / proj_league_avg if proj_league_avg > 0 else 1.0
+
+        # Cap scalars to prevent wild corrections
+        hr_scalar = max(0.85, min(hr_scalar, 1.25))
+        avg_scalar = max(0.95, min(avg_scalar, 1.08))
+
+        print(f"  Projected league HR: {total_proj_hr}, Actual: {ACTUAL_LEAGUE_HR}, Scalar: {hr_scalar:.3f}")
+        print(f"  Projected league AVG: {proj_league_avg:.3f}, Actual: {ACTUAL_LEAGUE_AVG:.3f}, Scalar: {avg_scalar:.3f}")
+
+        if abs(hr_scalar - 1.0) > 0.02 or abs(avg_scalar - 1.0) > 0.005:
+            for lahman_id, proj in list(cache.batting.items()):
+                proj["hr"] = max(0, int(round(proj["hr"] * hr_scalar)))
+                proj["hr_rate"] = round(proj["hr"] / max(proj["projected_pa"], 1), 4)
+                proj["avg"] = round(min(proj["avg"] * avg_scalar, 0.400), 3)
+                proj["ops"] = round(proj["obp"] + proj["slg"], 3)
+                cache.set_batting(lahman_id, proj)
+            print(f"  Applied calibration to {batter_count} batters")
+
+            # Update team roster caches with calibrated HR/AVG
+            for team_id_key, team_proj in list(cache.teams.items()):
+                for batter in team_proj.get("batters", []):
+                    mlbam_id = batter.get("id")
+                    lahman_id = id_mapper.mlbam_to_lahman(mlbam_id) if mlbam_id else None
+                    if lahman_id:
+                        updated = cache.get_batting(lahman_id)
+                        if updated:
+                            batter["hr"] = updated.get("hr")
+                            batter["avg"] = updated.get("avg")
+                            batter["ops"] = updated.get("ops")
+                cache.set_team(team_id_key, team_proj)
+        else:
+            print("  Scalars close to 1.0 — no calibration needed")
+    except Exception as e:
+        print(f"  Calibration failed (non-fatal): {e}")
+        import traceback
+        traceback.print_exc()
+
     elapsed = (datetime.now(timezone.utc) - start).seconds
     app.state.startup_time = datetime.now(timezone.utc).isoformat()
     print("=" * 60)
