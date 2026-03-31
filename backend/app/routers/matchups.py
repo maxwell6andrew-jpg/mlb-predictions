@@ -4,8 +4,8 @@
 /api/model/validation — walk-forward validation RMSE by year
 """
 
-from fastapi import APIRouter, Request, HTTPException
-from datetime import date
+from fastapi import APIRouter, Request, HTTPException, Query
+from datetime import date, datetime, timezone, timedelta
 import httpx
 
 from slowapi import Limiter
@@ -44,9 +44,14 @@ def _pitcher_from_cache(mlbam_id: int, cache, id_mapper) -> dict | None:
 
 @router.get("/matchups/today")
 @limiter.limit("20/minute")
-async def matchups_today(request: Request):
+async def matchups_today(request: Request, date_str: str = Query(None, alias="date")):
     """Return today's game predictions with win probabilities."""
-    today = date.today().isoformat()
+    if date_str:
+        today = date_str
+    else:
+        # Default to US Pacific time
+        pacific = timezone(timedelta(hours=-7))
+        today = datetime.now(pacific).strftime("%Y-%m-%d")
     api_client = request.app.state.api_client
     cache = request.app.state.projection_cache
     id_mapper = request.app.state.id_mapper
