@@ -178,7 +178,7 @@ export default function ModelPage() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, marginBottom: 16 }}>
           {[
             { step: 'Weighted Average', desc: 'Last 3 years weighted 5/4/3. Most recent season counts most. Rate stats computed per plate appearance.' },
-            { step: 'Regression to Mean', desc: 'Each stat is pulled toward the league average. Noisy stats (AVG: 1200 PA) regress harder than stable ones (K rate: 400 PA).' },
+            { step: 'Regression to Mean', desc: 'Each stat is pulled toward the league average. Noisy stats (AVG: 1000 PA) regress harder than stable ones (K rate: 400 PA).' },
             { step: 'Aging Curves', desc: 'Stat-specific peaks: power at 28-29, speed at 25-26, plate discipline at 28. Position-adjusted (catchers decline faster).' },
             { step: 'Playing Time', desc: 'Weighted PA average regressed 20% toward 400 PA baseline. Players over 33 get an additional discount.' },
           ].map(s => (
@@ -191,8 +191,8 @@ export default function ModelPage() {
 
         <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6 }}>
           <strong style={{ color: 'var(--text-secondary)' }}>Regression constants:</strong>{' '}
-          AVG=1200 PA, OBP=900, SLG=1000, HR rate=1000, BB rate=800, K rate=400, SB rate=1200.
-          Higher constants mean more regression (noisier stats).
+          AVG=1000 PA, OBP=900, SLG=1000, HR rate=800, BB rate=800, K rate=400, SB rate=1200.
+          Higher constants mean more regression (noisier stats). AVG and HR use lower constants to preserve more of elite hitters' true talent signal.
         </div>
       </Card>
 
@@ -218,16 +218,17 @@ export default function ModelPage() {
       <LayerBadge number={2} label="Statcast Corrections" />
 
       <Card>
-        <CardTitle sub="Adjusts Marcel projections using batted ball quality data from Baseball Savant">
-          35% Statcast / 65% Marcel Blend
+        <CardTitle sub="Adjusts Marcel projections using batted ball quality data from Baseball Savant. Stat-specific blend weights give more influence to Statcast where it's most predictive.">
+          Stat-Specific Statcast Blending
         </CardTitle>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12, marginBottom: 16 }}>
           <div style={{ background: 'var(--bg-hover)', borderRadius: 8, padding: 14 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: '#8b5cf6', marginBottom: 8 }}>Batting Adjustments</div>
             <ul style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.8, paddingLeft: 18 }}>
-              <li><strong>xwOBA luck correction:</strong> If actual wOBA is below xwOBA, the player was unlucky — nudge projection up</li>
-              <li><strong>Barrel rate &#8594; HR:</strong> High barrel rate with low HR total signals regression upward</li>
-              <li><strong>Exit velocity &#8594; SLG:</strong> Hard contact with low SLG suggests bad BABIP luck</li>
+              <li><strong>xBA direct blend (45%):</strong> Marcel AVG is blended directly toward Statcast xBA — the most predictive AVG signal available</li>
+              <li><strong>xwOBA luck correction:</strong> If actual wOBA is below xwOBA, the player was unlucky — nudge OBP and SLG up</li>
+              <li><strong>Barrel rate &#8594; HR (40%):</strong> The single best HR predictor. High barrel rate with low HR total signals regression upward</li>
+              <li><strong>Exit velocity &#8594; SLG (40%):</strong> Hard contact with low SLG suggests bad BABIP luck</li>
               <li><strong>Park factors:</strong> Half home games at team park, half neutral. Coors +35%, Oracle -12%</li>
             </ul>
           </div>
@@ -242,9 +243,11 @@ export default function ModelPage() {
           </div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
-          <StatBox label="Blend Weight" value="35%" desc="Statcast influence" color="#8b5cf6" />
+          <StatBox label="AVG (xBA)" value="45%" desc="Highest blend — xBA is very predictive" color="#8b5cf6" />
+          <StatBox label="HR (Barrel)" value="40%" desc="Barrel rate is best HR predictor" color="#8b5cf6" />
+          <StatBox label="SLG / EV" value="40%" desc="Exit velo + xSLG signal" color="#8b5cf6" />
+          <StatBox label="ERA / Other" value="35%" desc="Default Statcast weight" color="var(--text-secondary)" />
           <StatBox label="Lg Barrel %" value="7.5%" desc="League avg barrel rate" color="var(--text-secondary)" />
-          <StatBox label="Lg Exit Velo" value="88.5" desc="mph league average" color="var(--text-secondary)" />
           <StatBox label="Lg xwOBA" value=".310" desc="League avg xwOBA" color="var(--text-secondary)" />
         </div>
       </Card>
