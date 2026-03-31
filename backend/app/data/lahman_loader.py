@@ -15,6 +15,7 @@ class LahmanData:
 
     def load(self):
         print("Loading Lahman data...")
+        self._download_lahman_if_missing()
         self.batting = self._load_csv("Batting.csv")
         self.pitching = self._load_csv("Pitching.csv")
         self.teams = self._load_csv("Teams.csv")
@@ -28,6 +29,28 @@ class LahmanData:
         print(f"  Batting: {len(self.batting)} player-seasons")
         print(f"  Pitching: {len(self.pitching)} player-seasons")
         print(f"  People: {len(self.people)} entries")
+
+    def _download_lahman_if_missing(self):
+        """Download Lahman CSVs from GitHub if not present."""
+        needed = ["Batting.csv", "Pitching.csv", "Teams.csv", "People.csv", "Fielding.csv"]
+        missing = [f for f in needed if not (LAHMAN_DIR / f).exists()]
+        if not missing:
+            return
+        import urllib.request, zipfile, io
+        print("  Downloading Lahman data from GitHub...")
+        LAHMAN_DIR.mkdir(parents=True, exist_ok=True)
+        url = "https://github.com/chadwickbureau/baseballdatabank/archive/refs/heads/master.zip"
+        try:
+            with urllib.request.urlopen(url) as resp:
+                zf = zipfile.ZipFile(io.BytesIO(resp.read()))
+            for name in zf.namelist():
+                base = name.split("/")[-1]
+                if base in needed:
+                    with zf.open(name) as src, open(LAHMAN_DIR / base, "wb") as dst:
+                        dst.write(src.read())
+            print("  Lahman download complete.")
+        except Exception as e:
+            print(f"  WARNING: Could not download Lahman data: {e}")
 
     def _load_csv(self, filename: str) -> pd.DataFrame:
         path = LAHMAN_DIR / filename

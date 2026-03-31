@@ -218,8 +218,28 @@ async def lifespan(app: FastAPI):
     else:
         print("  WARNING: Could not fit model — using manual weights")
 
-    # 3. Build ID mapper
+    # 3. Build ID mapper (download Chadwick register if missing)
     chadwick_path = CHADWICK_DIR / "people.csv"
+    if not chadwick_path.exists():
+        import urllib.request
+        import pandas as _pd
+        print("  Downloading Chadwick register...")
+        CHADWICK_DIR.mkdir(parents=True, exist_ok=True)
+        base = "https://raw.githubusercontent.com/chadwickbureau/register/master/data/people-{}.csv"
+        frames = []
+        for suffix in list("0123456789") + list("abcdefghijklmnopqrstuvwxyz"):
+            try:
+                url = base.format(suffix)
+                df = _pd.read_csv(url, low_memory=False)
+                frames.append(df)
+            except Exception:
+                break
+        if frames:
+            _pd.concat(frames, ignore_index=True).to_csv(chadwick_path, index=False)
+            print(f"  Downloaded {len(frames)} Chadwick register files.")
+        else:
+            print("  WARNING: Could not download Chadwick register — ID mapping will be limited")
+            chadwick_path.touch()
     id_mapper = IDMapper(chadwick_path, lahman.people)
     app.state.id_mapper = id_mapper
 
