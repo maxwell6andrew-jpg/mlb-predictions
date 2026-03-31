@@ -303,6 +303,9 @@ async def _compute_team_projections(app):
             "division": team.get("division", ""),
             "batters": team_batters,
             "pitchers": team_pitchers,
+            "_rs": rs,   # stored for WAR recomputation in step 11
+            "_ra": ra,
+            "_initial_war": total_war,
         })
 
         cache.set_team(team_id, team_proj)
@@ -482,10 +485,18 @@ async def lifespan(app: FastAPI):
         import traceback
         traceback.print_exc()
 
-    # 11. Refresh team roster stats with post-adjustment WAR/HR/AVG
-    print("Refreshing team roster stats with adjusted projections...")
+    # 11. Recompute team wins using post-adjustment WAR, refresh standings + matchup win_pct
+    print("Recomputing team projections with adjusted WAR...")
     try:
+        # Get standings data needed for recomputation
+        standings_data = await api_client.get_standings(PROJECTION_YEAR - 1)
+        last_season_map = {t["team_id"]: t for t in standings_data}
+        current_standings_data = await api_client.get_standings(PROJECTION_YEAR)
+        current_season_map = {t["team_id"]: t for t in current_standings_data}
+
+        new_standings = []
         for team_id_key, team_proj in list(cache.teams.items()):
+            # Refresh individual player stats from adjusted caches
             refreshed_war = 0.0
             for batter in team_proj.get("batters", []):
                 mlbam_id = batter.get("id")
@@ -509,10 +520,89 @@ async def lifespan(app: FastAPI):
                         pitcher["k_per_9"] = updated.get("k_per_9")
                         pitcher["war"] = updated.get("war", 0)
                 refreshed_war += pitcher.get("war", 0)
+
+            # Recompute team wins with updated WAR
+            ls = last_season_map.get(team_id_key)
+            rs = team_proj.get("_rs", 0)
+            ra = team_proj.get("_ra", 0)
+
+            # Fall back to stored RS/RA or last season
+            if rs == 0 and ls:
+                rs = ls.get("runs_scored", 700)
+                ra = ls.get("runs_allowed", 700)
+            if rs == 0:
+                rs, ra = 700, 700
+
+            last_wins = ls.get("wins", 81) if ls else 81
+            last_games = (ls.get("wins", 81) + ls.get("losses", 81)) if ls else 162
+
+            new_team_proj = predict_wins(
+                model=team_model,
+                runs_scored=rs,
+                runs_allowed=ra,
+                last_season_wins=last_wins,
+                games_last_season=last_games,
+                roster_war=refreshed_war,
+            )
+
+            # Re-blend with Vegas
+            vegas_line = get_vegas_line(team_id_key)
+            model_wins = new_team_proj["projected_wins"]
+            if vegas_line:
+                blended_wins = int(round(model_wins * 0.6 + vegas_line * 0.4))
+                new_team_proj["projected_wins"] = blended_wins
+                new_team_proj["projected_losses"] = 162 - blended_wins
+                new_team_proj["win_pct"] = round(blended_wins / 162, 3)
+                new_team_proj["vegas_line"] = vegas_line
+                new_team_proj["model_wins"] = model_wins
+            else:
+                new_team_proj["vegas_line"] = None
+
+            # Re-apply Bayesian in-season update
+            cs_data = current_season_map.get(team_id_key)
+            if cs_data:
+                cs_w = cs_data.get("wins", 0)
+                cs_l = cs_data.get("losses", 0)
+                cs_rs = cs_data.get("runs_scored", 0)
+                cs_ra = cs_data.get("runs_allowed", 0)
+                if cs_w + cs_l >= 10:
+                    bayesian = blend_projection(
+                        preseason_wins=new_team_proj["projected_wins"],
+                        current_wins=cs_w,
+                        current_losses=cs_l,
+                        current_rs=cs_rs,
+                        current_ra=cs_ra,
+                    )
+                    new_team_proj["projected_wins"] = bayesian["projected_wins"]
+                    new_team_proj["projected_losses"] = bayesian["projected_losses"]
+                    new_team_proj["win_pct"] = bayesian["win_pct"]
+
+            # Update team cache with new win totals AND refreshed roster
+            team_proj["projected_wins"] = new_team_proj["projected_wins"]
+            team_proj["projected_losses"] = new_team_proj["projected_losses"]
+            team_proj["win_pct"] = new_team_proj["win_pct"]
+            team_proj["model_wins"] = new_team_proj.get("model_wins", new_team_proj["projected_wins"])
             cache.set_team(team_id_key, team_proj)
-        print(f"  Refreshed roster stats for {len(cache.teams)} teams")
+
+            new_standings.append({
+                "team_id": team_id_key,
+                "name": team_proj.get("name", ""),
+                "abbreviation": team_proj.get("abbreviation", ""),
+                "league": team_proj.get("league", ""),
+                "division": team_proj.get("division", ""),
+                "projected_wins": new_team_proj["projected_wins"],
+                "projected_losses": new_team_proj["projected_losses"],
+                "win_pct": new_team_proj["win_pct"],
+                "vegas_line": vegas_line,
+            })
+
+        # Replace standings cache with recomputed values
+        app.state.standings_cache = new_standings
+        print(f"  Recomputed wins for {len(new_standings)} teams using adjusted WAR")
     except Exception as e:
-        print(f"  Roster refresh failed (non-fatal): {e}")
+        print(f"  Win recomputation failed (non-fatal, keeping original): {e}")
+        import traceback
+        traceback.print_exc()
 
     elapsed = (datetime.now(timezone.utc) - start).seconds
     app.state.startup_time = datetime.now(timezone.utc).isoformat()
