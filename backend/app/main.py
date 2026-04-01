@@ -33,7 +33,7 @@ from app.data.vegas_lines import get_vegas_line
 from app.config import LAHMAN_DIR, CHADWICK_DIR, PROJECTION_YEAR
 
 from app.routers import search, teams, players
-from app.routers import matchups, season
+from app.routers import matchups, season, edge
 
 # Rate limiter: 60 requests/minute per IP
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
@@ -644,6 +644,7 @@ app.include_router(teams.router)
 app.include_router(players.router)
 app.include_router(matchups.router)
 app.include_router(season.router)
+app.include_router(edge.router)  # unlisted — not linked from frontend
 
 
 @app.get("/api/health")
