@@ -540,16 +540,18 @@ def _generate_batter_props(batters, pitcher, pitcher_name, pitcher_team,
         matchup_k_rate = b_k_rate * pitcher_k_mult
         # Assuming ~4 PA per game
         expected_ks = matchup_k_rate * 4.0
-        # Typical line is 0.5 Ks
-        if matchup_k_rate > 0.26 and pitcher_k_mult > 1.1:
-            k_confidence = min(90, int(50 + (matchup_k_rate - LG_K_RATE) * 300 + (pitcher_k_mult - 1) * 30))
+        k_line = 0.5
+        # Only recommend OVER if projected value actually beats the line
+        if expected_ks > k_line + 0.15 and pitcher_k_mult > 1.05:
+            edge_over_line = expected_ks - k_line
+            k_confidence = min(90, int(50 + edge_over_line * 25 + (pitcher_k_mult - 1) * 30))
             props.append({
                 "type": "strikeout",
-                "prop": "OVER 0.5 Ks",
+                "prop": f"OVER {k_line} Ks",
                 "player": batter_name,
                 "player_team": batter_team,
                 "matchup": f"vs {pitcher_name} ({pitcher_team})",
-                "line": 0.5,
+                "line": k_line,
                 "recommendation": "OVER",
                 "projected_value": round(expected_ks, 2),
                 "reasoning": f"{batter_name} K rate {b_k_rate:.1%} vs {pitcher_name} ({p_k9:.1f} K/9, {pitcher_k_mult:.0%} of avg)",
@@ -562,29 +564,33 @@ def _generate_batter_props(batters, pitcher, pitcher_name, pitcher_team,
         # Matchup hit rate = batter AVG adjusted by pitcher quality
         matchup_hit_rate = b_avg * pitcher_hit_mult
         expected_hits = matchup_hit_rate * 4.0  # ~4 AB
-        # Over 0.5 hits
-        if b_avg > 0.260 and pitcher_hit_mult > 0.95:
-            hit_confidence = min(90, int(50 + (b_avg - LG_AVG) * 500 + (pitcher_hit_mult - 1) * 20))
+        hit_line = 0.5
+        # Only recommend when projected output actually exceeds the line
+        if expected_hits > hit_line + 0.15:
+            edge_over_line = expected_hits - hit_line
+            hit_confidence = min(90, int(50 + edge_over_line * 30 + (b_avg - LG_AVG) * 200))
             props.append({
                 "type": "hits",
-                "prop": "OVER 0.5 hits",
+                "prop": f"OVER {hit_line} hits",
                 "player": batter_name,
                 "player_team": batter_team,
                 "matchup": f"vs {pitcher_name} ({pitcher_team})",
-                "line": 0.5,
+                "line": hit_line,
                 "recommendation": "OVER",
                 "projected_value": round(expected_hits, 2),
-                "reasoning": f"{batter_name} .{int(b_avg*1000)} AVG vs {pitcher_name} ({p_whip:.2f} WHIP)",
+                "reasoning": f"{batter_name} .{int(b_avg*1000)} AVG vs {pitcher_name} ({p_whip:.2f} WHIP) → proj {expected_hits:.1f} hits",
                 "confidence_score": hit_confidence,
                 "confidence": "Strong" if hit_confidence >= 75 else "Moderate" if hit_confidence >= 60 else "Lean",
                 "game_time": game_time,
             })
 
         # --- HR PROP ---
-        # HR probability = batter HR rate × pitcher HR tendency × park factor
+        # HR probability per PA × ~4 PA = game HR probability
         matchup_hr_prob = b_hr_rate * pitcher_hr_mult * park_factor
-        if matchup_hr_prob > 0.040 and b_hr >= 20:
-            hr_confidence = min(85, int(40 + (matchup_hr_prob - LG_HR_RATE) * 1000 + (b_hr - 20) * 0.5))
+        game_hr_prob = matchup_hr_prob * 4.0  # chance of at least 1 HR in ~4 PA
+        # Only recommend when there's a real HR threat
+        if game_hr_prob > 0.12 and b_hr >= 20:
+            hr_confidence = min(85, int(40 + (game_hr_prob - 0.10) * 200 + (b_hr - 20) * 0.5))
             props.append({
                 "type": "home_run",
                 "prop": "to hit HR",
@@ -593,29 +599,31 @@ def _generate_batter_props(batters, pitcher, pitcher_name, pitcher_team,
                 "matchup": f"vs {pitcher_name} ({pitcher_team})",
                 "line": 0.5,
                 "recommendation": "YES",
-                "projected_value": round(matchup_hr_prob * 4, 3),  # prob in ~4 PA
-                "reasoning": f"{batter_name} proj {b_hr} HR ({b_hr_rate:.1%}/PA) vs {pitcher_name} ({p_hr9:.1f} HR/9) | park {park_factor:.2f}x",
+                "projected_value": round(game_hr_prob, 3),
+                "reasoning": f"{batter_name} proj {b_hr} HR ({b_hr_rate:.1%}/PA) vs {pitcher_name} ({p_hr9:.1f} HR/9) | park {park_factor:.2f}x → {game_hr_prob:.0%} chance",
                 "confidence_score": hr_confidence,
                 "confidence": "Strong" if hr_confidence >= 75 else "Moderate" if hr_confidence >= 60 else "Lean",
                 "game_time": game_time,
             })
 
         # --- TOTAL BASES PROP ---
-        # Expected TB per game ≈ (1B * 1 + 2B * 2 + 3B * 3 + HR * 4) / games
-        # Simplify: SLG * AB_per_game
+        # Expected TB per game ≈ SLG * AB_per_game, adjusted for pitcher/park
         expected_tb = b_slg * 3.8 * pitcher_hit_mult * park_factor
-        if expected_tb > 1.6 and b_ops > 0.780:
-            tb_confidence = min(85, int(45 + (expected_tb - 1.4) * 30 + (b_ops - 0.700) * 50))
+        tb_line = 1.5
+        # Only recommend when projected TB actually exceeds the line
+        if expected_tb > tb_line + 0.2:
+            edge_over_line = expected_tb - tb_line
+            tb_confidence = min(85, int(45 + edge_over_line * 20 + (b_ops - 0.700) * 50))
             props.append({
                 "type": "total_bases",
-                "prop": "OVER 1.5 total bases",
+                "prop": f"OVER {tb_line} total bases",
                 "player": batter_name,
                 "player_team": batter_team,
                 "matchup": f"vs {pitcher_name} ({pitcher_team})",
-                "line": 1.5,
+                "line": tb_line,
                 "recommendation": "OVER",
                 "projected_value": round(expected_tb, 2),
-                "reasoning": f"{batter_name} .{int(b_slg*1000)} SLG, {b_ops:.3f} OPS vs {pitcher_name} ({p_era:.2f} ERA)",
+                "reasoning": f"{batter_name} .{int(b_slg*1000)} SLG, {b_ops:.3f} OPS vs {pitcher_name} ({p_era:.2f} ERA) → proj {expected_tb:.1f} TB",
                 "confidence_score": tb_confidence,
                 "confidence": "Strong" if tb_confidence >= 75 else "Moderate" if tb_confidence >= 60 else "Lean",
                 "game_time": game_time,
