@@ -1,6 +1,7 @@
 """
 /api/edge/season — Model vs Vegas season win totals with value identification
 /api/edge/today  — Today's games with REAL odds from DraftKings/FanDuel/etc
+/api/edge/props  — Player prop recommendations based on pitcher/batter matchups
 
 PRIVATE ENDPOINTS — not linked from public frontend.
 Requires ODDS_API_KEY environment variable for live odds.
@@ -9,17 +10,27 @@ Requires ODDS_API_KEY environment variable for live odds.
 from fastapi import APIRouter, Request, Query
 from datetime import datetime, timezone, timedelta
 import math
+import httpx
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from app.data.vegas_lines import get_vegas_line
 from app.data.odds_client import fetch_live_odds, match_odds_to_team_name, get_remaining_requests
+from app.data.park_factors import get_park_factor
 
 limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/api/edge")
 
 KELLY_FRACTION = 0.25  # 25% Kelly — conservative
+
+# League average baselines (2024 season)
+LG_AVG = 0.248
+LG_HR_RATE = 0.033   # HR per PA
+LG_K_RATE = 0.228    # K per PA
+LG_H_RATE = 0.248    # hits per AB (approx AVG)
+LG_ERA = 4.00
+LG_K_PER_9 = 8.6
 
 
 def _implied_prob(ml: int) -> float:
@@ -275,15 +286,393 @@ async def edge_today(request: Request):
     # Best bets first
     value_games.sort(key=lambda g: g["ev_per_100"], reverse=True)
 
+    # --- BUILD $100 BET SLIP ---
+    bankroll = 100.0
+    bet_slip = []
+    remaining_bankroll = bankroll
+    for g in value_games:
+        if g["value_side"] == "PASS":
+            continue
+        bet_amount = round(g["kelly_pct"] / 100 * bankroll, 2)
+        if bet_amount < 1.0:
+            continue  # Skip tiny bets
+        if bet_amount > remaining_bankroll:
+            bet_amount = round(remaining_bankroll, 2)
+        if bet_amount <= 0:
+            break
+        remaining_bankroll -= bet_amount
+
+        # Calculate potential payout
+        value_ml = g["best_home_ml"] if g["value_side"] == "HOME" else g["best_away_ml"]
+        dec_odds = _decimal_odds(value_ml)
+        potential_payout = round(bet_amount * dec_odds, 2)
+        potential_profit = round(potential_payout - bet_amount, 2)
+
+        bet_slip.append({
+            "team": g["value_team"],
+            "opponent": g["away_team"] if g["value_side"] == "HOME" else g["home_team"],
+            "side": g["value_side"],
+            "moneyline": value_ml,
+            "book": g["best_book"],
+            "bet_amount": bet_amount,
+            "potential_payout": potential_payout,
+            "potential_profit": potential_profit,
+            "ev_per_100": g["ev_per_100"],
+            "model_prob": round(g["model_home_prob"] if g["value_side"] == "HOME" else g["model_away_prob"], 3),
+            "edge_pct": g["edge_pct"],
+            "matchup": f"{g['away_team']} @ {g['home_team']}",
+            "game_time": g["game_time"],
+        })
+
+    total_wagered = round(sum(b["bet_amount"] for b in bet_slip), 2)
+    total_potential_profit = round(sum(b["potential_profit"] for b in bet_slip), 2)
+
     return {
         "date": datetime.now(timezone(timedelta(hours=-7))).strftime("%Y-%m-%d"),
         "games": value_games,
         "total_games": len(value_games),
         "value_bets": sum(1 for g in value_games if g["value_side"] != "PASS"),
         "best_bet": value_games[0] if value_games and value_games[0]["value_side"] != "PASS" else None,
+        "bet_slip": {
+            "bankroll": bankroll,
+            "bets": bet_slip,
+            "total_wagered": total_wagered,
+            "remaining_bankroll": round(bankroll - total_wagered, 2),
+            "total_potential_profit": total_potential_profit,
+            "num_bets": len(bet_slip),
+        },
         "quota": get_remaining_requests(),
-        "bankroll_note": "kelly_bet_on_100 = dollars to wager if your bankroll is $100. Scale linearly.",
         "disclaimer": "For research/entertainment only. Not gambling advice.",
+    }
+
+
+@router.get("/props")
+@limiter.limit("10/minute")
+async def edge_props(request: Request):
+    """
+    Player prop recommendations based on pitcher/batter matchup projections.
+    Uses our Marcel projections + Statcast adjustments to find edges in:
+    - Strikeout props (pitcher K rate vs batter K rate)
+    - Hit props (batter AVG vs pitcher WHIP)
+    - HR props (batter HR rate vs pitcher HR/9, park factor)
+    - Total bases props (batter SLG vs pitcher quality)
+    """
+    cache = request.app.state.projection_cache
+    standings = getattr(request.app.state, "standings_cache", [])
+    api_client = request.app.state.api_client
+    id_mapper = request.app.state.id_mapper
+
+    pacific = timezone(timedelta(hours=-7))
+    today = datetime.now(pacific).strftime("%Y-%m-%d")
+
+    # Fetch today's schedule with probable pitchers
+    try:
+        data = await api_client._get(
+            "/schedule",
+            params={"sportId": 1, "date": today, "hydrate": "probablePitcher,team,linescore"},
+            cache_ttl=300,
+        )
+        dates = data.get("dates", [])
+        games_raw = dates[0]["games"] if dates else []
+    except Exception:
+        games_raw = []
+
+    if not games_raw:
+        return {"date": today, "props": [], "message": "No games scheduled today."}
+
+    all_props = []
+
+    for g in games_raw:
+        away_info = g["teams"]["away"]
+        home_info = g["teams"]["home"]
+        away_id = away_info["team"]["id"]
+        home_id = home_info["team"]["id"]
+        away_name = away_info["team"]["name"]
+        home_name = home_info["team"]["name"]
+
+        # Get probable pitchers
+        away_sp_meta = away_info.get("probablePitcher", {})
+        home_sp_meta = home_info.get("probablePitcher", {})
+        away_sp_mlbam = away_sp_meta.get("id")
+        home_sp_mlbam = home_sp_meta.get("id")
+        away_sp_name = away_sp_meta.get("fullName", "TBD")
+        home_sp_name = home_sp_meta.get("fullName", "TBD")
+
+        # Pitcher projections
+        away_sp_proj = _pitcher_from_cache(away_sp_mlbam, cache, id_mapper) if away_sp_mlbam else None
+        home_sp_proj = _pitcher_from_cache(home_sp_mlbam, cache, id_mapper) if home_sp_mlbam else None
+
+        # Team projections (contain batter lists)
+        home_team_proj = cache.get_team(home_id)
+        away_team_proj = cache.get_team(away_id)
+
+        park = get_park_factor(home_id, "runs")
+        park_hr = get_park_factor(home_id, "hr") if hasattr(get_park_factor, '__call__') else park
+
+        game_time = g.get("gameDate", "")
+
+        # Generate props for away batters vs home pitcher
+        if home_sp_proj and away_team_proj:
+            props = _generate_batter_props(
+                batters=away_team_proj.get("batters", []),
+                pitcher=home_sp_proj,
+                pitcher_name=home_sp_name,
+                pitcher_team=home_name,
+                batter_team=away_name,
+                cache=cache,
+                id_mapper=id_mapper,
+                park_factor=park,
+                game_time=game_time,
+            )
+            all_props.extend(props)
+
+        # Generate props for home batters vs away pitcher
+        if away_sp_proj and home_team_proj:
+            props = _generate_batter_props(
+                batters=home_team_proj.get("batters", []),
+                pitcher=away_sp_proj,
+                pitcher_name=away_sp_name,
+                pitcher_team=away_name,
+                batter_team=home_name,
+                cache=cache,
+                id_mapper=id_mapper,
+                park_factor=park,
+                game_time=game_time,
+            )
+            all_props.extend(props)
+
+        # Pitcher strikeout props
+        if home_sp_proj and away_team_proj:
+            k_prop = _generate_pitcher_k_prop(
+                pitcher=home_sp_proj,
+                pitcher_name=home_sp_name,
+                pitcher_team=home_name,
+                opp_team=away_name,
+                opp_batters=away_team_proj.get("batters", []),
+                cache=cache,
+                id_mapper=id_mapper,
+                game_time=game_time,
+            )
+            if k_prop:
+                all_props.append(k_prop)
+
+        if away_sp_proj and home_team_proj:
+            k_prop = _generate_pitcher_k_prop(
+                pitcher=away_sp_proj,
+                pitcher_name=away_sp_name,
+                pitcher_team=away_name,
+                opp_team=home_name,
+                opp_batters=home_team_proj.get("batters", []),
+                cache=cache,
+                id_mapper=id_mapper,
+                game_time=game_time,
+            )
+            if k_prop:
+                all_props.append(k_prop)
+
+    # Sort by confidence (strongest props first)
+    all_props.sort(key=lambda p: p["confidence_score"], reverse=True)
+
+    return {
+        "date": today,
+        "props": all_props,
+        "total_props": len(all_props),
+        "strong_props": sum(1 for p in all_props if p["confidence_score"] >= 70),
+    }
+
+
+def _pitcher_from_cache(mlbam_id, cache, id_mapper):
+    """Look up pitcher projection from cache."""
+    if not mlbam_id:
+        return None
+    lahman_id = id_mapper.mlbam_to_lahman(mlbam_id)
+    if not lahman_id:
+        return None
+    return cache.get_pitching(lahman_id)
+
+
+def _batter_from_cache(mlbam_id, cache, id_mapper):
+    """Look up batter projection from cache."""
+    if not mlbam_id:
+        return None
+    lahman_id = id_mapper.mlbam_to_lahman(mlbam_id)
+    if not lahman_id:
+        return None
+    return cache.get_batting(lahman_id)
+
+
+def _generate_batter_props(batters, pitcher, pitcher_name, pitcher_team,
+                           batter_team, cache, id_mapper, park_factor, game_time):
+    """Generate hit, HR, and total bases props for batters facing a pitcher."""
+    props = []
+    p_era = pitcher.get("era", LG_ERA)
+    p_k9 = pitcher.get("k_per_9", LG_K_PER_9)
+    p_hr9 = pitcher.get("hr_per_9", 1.2)
+    p_whip = pitcher.get("whip", 1.30)
+
+    # Pitcher quality multipliers (relative to league average)
+    pitcher_k_mult = p_k9 / LG_K_PER_9  # >1 = high-K pitcher
+    pitcher_hr_mult = p_hr9 / 1.2  # >1 = gives up more HR
+    pitcher_hit_mult = p_whip / 1.30  # >1 = gives up more hits
+
+    for batter_info in batters[:9]:  # Top 9 lineup spots
+        batter_mlbam = batter_info.get("id")
+        batter_proj = _batter_from_cache(batter_mlbam, cache, id_mapper)
+        if not batter_proj:
+            continue
+
+        batter_name = batter_proj.get("name", batter_info.get("name", "Unknown"))
+        b_avg = batter_proj.get("avg", LG_AVG)
+        b_hr = batter_proj.get("hr", 15)
+        b_pa = batter_proj.get("projected_pa", 500)
+        b_k_rate = batter_proj.get("k_rate", LG_K_RATE)
+        b_hr_rate = batter_proj.get("hr_rate", LG_HR_RATE)
+        b_slg = batter_proj.get("slg", 0.400)
+        b_ops = batter_proj.get("ops", 0.700)
+        position = batter_proj.get("position", batter_info.get("position", ""))
+
+        # Skip pitchers
+        if position in ("P", "SP", "RP"):
+            continue
+
+        # --- STRIKEOUT PROP ---
+        # Matchup K rate = batter's K tendency × pitcher's K ability
+        matchup_k_rate = b_k_rate * pitcher_k_mult
+        # Assuming ~4 PA per game
+        expected_ks = matchup_k_rate * 4.0
+        # Typical line is 0.5 Ks
+        if matchup_k_rate > 0.26 and pitcher_k_mult > 1.1:
+            k_confidence = min(90, int(50 + (matchup_k_rate - LG_K_RATE) * 300 + (pitcher_k_mult - 1) * 30))
+            props.append({
+                "type": "strikeout",
+                "prop": "OVER 0.5 Ks",
+                "player": batter_name,
+                "player_team": batter_team,
+                "matchup": f"vs {pitcher_name} ({pitcher_team})",
+                "line": 0.5,
+                "recommendation": "OVER",
+                "projected_value": round(expected_ks, 2),
+                "reasoning": f"{batter_name} K rate {b_k_rate:.1%} vs {pitcher_name} ({p_k9:.1f} K/9, {pitcher_k_mult:.0%} of avg)",
+                "confidence_score": k_confidence,
+                "confidence": "Strong" if k_confidence >= 75 else "Moderate" if k_confidence >= 60 else "Lean",
+                "game_time": game_time,
+            })
+
+        # --- HIT PROP ---
+        # Matchup hit rate = batter AVG adjusted by pitcher quality
+        matchup_hit_rate = b_avg * pitcher_hit_mult
+        expected_hits = matchup_hit_rate * 4.0  # ~4 AB
+        # Over 0.5 hits
+        if b_avg > 0.260 and pitcher_hit_mult > 0.95:
+            hit_confidence = min(90, int(50 + (b_avg - LG_AVG) * 500 + (pitcher_hit_mult - 1) * 20))
+            props.append({
+                "type": "hits",
+                "prop": "OVER 0.5 hits",
+                "player": batter_name,
+                "player_team": batter_team,
+                "matchup": f"vs {pitcher_name} ({pitcher_team})",
+                "line": 0.5,
+                "recommendation": "OVER",
+                "projected_value": round(expected_hits, 2),
+                "reasoning": f"{batter_name} .{int(b_avg*1000)} AVG vs {pitcher_name} ({p_whip:.2f} WHIP)",
+                "confidence_score": hit_confidence,
+                "confidence": "Strong" if hit_confidence >= 75 else "Moderate" if hit_confidence >= 60 else "Lean",
+                "game_time": game_time,
+            })
+
+        # --- HR PROP ---
+        # HR probability = batter HR rate × pitcher HR tendency × park factor
+        matchup_hr_prob = b_hr_rate * pitcher_hr_mult * park_factor
+        if matchup_hr_prob > 0.040 and b_hr >= 20:
+            hr_confidence = min(85, int(40 + (matchup_hr_prob - LG_HR_RATE) * 1000 + (b_hr - 20) * 0.5))
+            props.append({
+                "type": "home_run",
+                "prop": "to hit HR",
+                "player": batter_name,
+                "player_team": batter_team,
+                "matchup": f"vs {pitcher_name} ({pitcher_team})",
+                "line": 0.5,
+                "recommendation": "YES",
+                "projected_value": round(matchup_hr_prob * 4, 3),  # prob in ~4 PA
+                "reasoning": f"{batter_name} proj {b_hr} HR ({b_hr_rate:.1%}/PA) vs {pitcher_name} ({p_hr9:.1f} HR/9) | park {park_factor:.2f}x",
+                "confidence_score": hr_confidence,
+                "confidence": "Strong" if hr_confidence >= 75 else "Moderate" if hr_confidence >= 60 else "Lean",
+                "game_time": game_time,
+            })
+
+        # --- TOTAL BASES PROP ---
+        # Expected TB per game ≈ (1B * 1 + 2B * 2 + 3B * 3 + HR * 4) / games
+        # Simplify: SLG * AB_per_game
+        expected_tb = b_slg * 3.8 * pitcher_hit_mult * park_factor
+        if expected_tb > 1.6 and b_ops > 0.780:
+            tb_confidence = min(85, int(45 + (expected_tb - 1.4) * 30 + (b_ops - 0.700) * 50))
+            props.append({
+                "type": "total_bases",
+                "prop": "OVER 1.5 total bases",
+                "player": batter_name,
+                "player_team": batter_team,
+                "matchup": f"vs {pitcher_name} ({pitcher_team})",
+                "line": 1.5,
+                "recommendation": "OVER",
+                "projected_value": round(expected_tb, 2),
+                "reasoning": f"{batter_name} .{int(b_slg*1000)} SLG, {b_ops:.3f} OPS vs {pitcher_name} ({p_era:.2f} ERA)",
+                "confidence_score": tb_confidence,
+                "confidence": "Strong" if tb_confidence >= 75 else "Moderate" if tb_confidence >= 60 else "Lean",
+                "game_time": game_time,
+            })
+
+    return props
+
+
+def _generate_pitcher_k_prop(pitcher, pitcher_name, pitcher_team, opp_team,
+                              opp_batters, cache, id_mapper, game_time):
+    """Generate pitcher strikeout total prop."""
+    p_k9 = pitcher.get("k_per_9", LG_K_PER_9)
+    p_ip = pitcher.get("projected_ip", 150)
+    p_era = pitcher.get("era", LG_ERA)
+
+    # Average K rate of opposing lineup
+    opp_k_rates = []
+    for b in opp_batters[:9]:
+        bp = _batter_from_cache(b.get("id"), cache, id_mapper)
+        if bp:
+            opp_k_rates.append(bp.get("k_rate", LG_K_RATE))
+
+    avg_opp_k_rate = sum(opp_k_rates) / len(opp_k_rates) if opp_k_rates else LG_K_RATE
+
+    # Projected Ks this game: (pitcher K/9) × (expected IP ~5.5-6) × (opp K tendency)
+    expected_ip = min(6.5, max(4.5, p_ip / 30))  # rough per-start IP
+    opp_k_mult = avg_opp_k_rate / LG_K_RATE
+    projected_ks = (p_k9 / 9) * expected_ip * opp_k_mult
+
+    # Standard line is usually 4.5 or 5.5
+    if projected_ks >= 5.5:
+        line = 5.5
+    elif projected_ks >= 4.5:
+        line = 4.5
+    else:
+        line = 3.5
+
+    rec = "OVER" if projected_ks > line + 0.3 else "UNDER" if projected_ks < line - 0.5 else None
+    if not rec:
+        return None
+
+    edge = abs(projected_ks - line)
+    confidence = min(90, int(50 + edge * 15 + (p_k9 - LG_K_PER_9) * 5))
+
+    return {
+        "type": "pitcher_strikeouts",
+        "prop": f"{rec} {line} Ks",
+        "player": pitcher_name,
+        "player_team": pitcher_team,
+        "matchup": f"vs {opp_team}",
+        "line": line,
+        "recommendation": rec,
+        "projected_value": round(projected_ks, 1),
+        "reasoning": f"{pitcher_name} {p_k9:.1f} K/9, ~{expected_ip:.1f} IP | {opp_team} lineup K rate {avg_opp_k_rate:.1%} ({opp_k_mult:.0%} of avg)",
+        "confidence_score": confidence,
+        "confidence": "Strong" if confidence >= 75 else "Moderate" if confidence >= 60 else "Lean",
+        "game_time": game_time,
     }
 
 

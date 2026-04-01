@@ -14,6 +14,7 @@ const SIDE_COLOR = {
   PASS: 'var(--text-muted)',
   OVER: '#22c55e',
   UNDER: '#ef4444',
+  YES: '#22c55e',
 }
 
 const CONF_COLOR = {
@@ -21,6 +22,22 @@ const CONF_COLOR = {
   Moderate: '#f97316',
   Lean: '#eab308',
   'No edge': 'var(--text-muted)',
+}
+
+const PROP_TYPE_LABEL = {
+  strikeout: 'K',
+  hits: 'H',
+  home_run: 'HR',
+  total_bases: 'TB',
+  pitcher_strikeouts: 'P-K',
+}
+
+const PROP_TYPE_COLOR = {
+  strikeout: '#ef4444',
+  hits: '#3b82f6',
+  home_run: '#f97316',
+  total_bases: '#a855f7',
+  pitcher_strikeouts: '#22c55e',
 }
 
 function MoneylineTag({ ml, book }) {
@@ -51,6 +68,128 @@ function EVBadge({ ev }) {
   )
 }
 
+/* ─── BET SLIP ────────────────────────────────────────────── */
+function BetSlip({ slip }) {
+  if (!slip || !slip.bets || slip.bets.length === 0) return null
+
+  return (
+    <div style={{
+      background: 'linear-gradient(135deg, rgba(34,197,94,0.06), rgba(59,130,246,0.06))',
+      border: '2px solid #22c55e30',
+      borderRadius: 14,
+      padding: 20,
+      marginBottom: 24,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 800 }}>Your Bet Slip</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+            $100 bankroll &middot; Kelly-sized &middot; {slip.num_bets} bet{slip.num_bets !== 1 ? 's' : ''}
+          </div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>TOTAL WAGERED</div>
+          <div style={{ fontSize: 20, fontWeight: 800, fontFamily: 'JetBrains Mono, monospace', color: 'var(--accent)' }}>
+            ${slip.total_wagered.toFixed(2)}
+          </div>
+        </div>
+      </div>
+
+      {/* Individual bets */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {slip.bets.map((bet, i) => (
+          <div key={i} style={{
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border)',
+            borderRadius: 10,
+            padding: '12px 16px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 12,
+            flexWrap: 'wrap',
+          }}>
+            <div style={{ flex: '1 1 200px' }}>
+              <div style={{ fontWeight: 700, fontSize: 15 }}>
+                <span style={{ color: SIDE_COLOR[bet.side] }}>{bet.team}</span>
+                <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 13 }}> ML</span>
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                {bet.matchup} &middot;{' '}
+                {new Date(bet.game_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ textAlign: 'center', minWidth: 60 }}>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Line</div>
+                <MoneylineTag ml={bet.moneyline} />
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>{bet.book}</div>
+              </div>
+              <div style={{ textAlign: 'center', minWidth: 50 }}>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Model</div>
+                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13 }}>
+                  {(bet.model_prob * 100).toFixed(0)}%
+                </div>
+              </div>
+              <div style={{ textAlign: 'center', minWidth: 50 }}>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Edge</div>
+                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13, color: '#22c55e' }}>
+                  +{bet.edge_pct}%
+                </div>
+              </div>
+              <div style={{
+                textAlign: 'center',
+                minWidth: 70,
+                background: '#22c55e15',
+                borderRadius: 8,
+                padding: '6px 12px',
+              }}>
+                <div style={{ fontSize: 10, color: '#22c55e', textTransform: 'uppercase', fontWeight: 700 }}>Bet</div>
+                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 800, fontSize: 16, color: '#22c55e' }}>
+                  ${bet.bet_amount.toFixed(2)}
+                </div>
+              </div>
+              <div style={{ textAlign: 'center', minWidth: 60 }}>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>To Win</div>
+                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 14, color: 'var(--accent)' }}>
+                  ${bet.potential_profit.toFixed(2)}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Summary footer */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        marginTop: 14,
+        paddingTop: 14,
+        borderTop: '1px solid var(--border)',
+        fontSize: 13,
+        flexWrap: 'wrap',
+        gap: 12,
+      }}>
+        <div>
+          <span style={{ color: 'var(--text-muted)' }}>Remaining: </span>
+          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+            ${slip.remaining_bankroll.toFixed(2)}
+          </span>
+        </div>
+        <div>
+          <span style={{ color: 'var(--text-muted)' }}>If all hit: </span>
+          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, color: '#22c55e' }}>
+            +${slip.total_potential_profit.toFixed(2)}
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ─── GAME CARD ───────────────────────────────────────────── */
 function TodayGameCard({ game }) {
   const [expanded, setExpanded] = useState(false)
   const isPass = game.value_side === 'PASS'
@@ -66,7 +205,6 @@ function TodayGameCard({ game }) {
       }}
       onClick={() => setExpanded(e => !e)}
     >
-      {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
         <div>
           <div style={{ fontSize: 15, fontWeight: 700 }}>
@@ -100,7 +238,6 @@ function TodayGameCard({ game }) {
         </div>
       </div>
 
-      {/* Value Pick */}
       {!isPass && (
         <div style={{
           background: `${SIDE_COLOR[game.value_side]}10`,
@@ -121,30 +258,9 @@ function TodayGameCard({ game }) {
               <MoneylineTag ml={game.value_side === 'HOME' ? game.best_home_ml : game.best_away_ml} book={game.best_book} />
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 20, marginTop: 10, fontSize: 13 }}>
-            <div>
-              <span style={{ color: 'var(--text-muted)' }}>Edge: </span>
-              <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, color: game.edge_pct > 0 ? '#22c55e' : '#ef4444' }}>
-                {game.edge_pct > 0 ? '+' : ''}{game.edge_pct}%
-              </span>
-            </div>
-            <div>
-              <span style={{ color: 'var(--text-muted)' }}>Kelly: </span>
-              <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
-                {game.kelly_pct.toFixed(1)}%
-              </span>
-            </div>
-            <div>
-              <span style={{ color: 'var(--text-muted)' }}>Bet/$100: </span>
-              <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, color: 'var(--accent)' }}>
-                ${game.kelly_bet_on_100.toFixed(2)}
-              </span>
-            </div>
-          </div>
         </div>
       )}
 
-      {/* Probability Comparison */}
       <div style={{ display: 'flex', gap: 12, fontSize: 13 }}>
         <div style={{ flex: 1 }}>
           <div style={{ color: 'var(--text-muted)', fontSize: 11, marginBottom: 4 }}>MODEL</div>
@@ -170,7 +286,6 @@ function TodayGameCard({ game }) {
         </div>
       </div>
 
-      {/* Expanded: All odds */}
       {expanded && (
         <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>
@@ -194,16 +309,6 @@ function TodayGameCard({ game }) {
               </div>
             ))}
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
-            <div style={{ fontSize: 12 }}>
-              <span style={{ color: 'var(--text-muted)' }}>Model ML: </span>
-              <MoneylineTag ml={game.model_away_ml} /> / <MoneylineTag ml={game.model_home_ml} />
-            </div>
-            <div style={{ fontSize: 12 }}>
-              <span style={{ color: 'var(--text-muted)' }}>Consensus: </span>
-              <MoneylineTag ml={game.vegas_away_ml} /> / <MoneylineTag ml={game.vegas_home_ml} />
-            </div>
-          </div>
         </div>
       )}
 
@@ -214,6 +319,80 @@ function TodayGameCard({ game }) {
   )
 }
 
+/* ─── PLAYER PROP CARD ────────────────────────────────────── */
+function PropCard({ prop }) {
+  const typeColor = PROP_TYPE_COLOR[prop.type] || 'var(--text-muted)'
+  const typeLabel = PROP_TYPE_LABEL[prop.type] || prop.type
+
+  return (
+    <div style={{
+      background: 'var(--bg-surface)',
+      border: `1px solid ${typeColor}30`,
+      borderRadius: 10,
+      padding: '14px 16px',
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+            <span style={{
+              background: `${typeColor}20`,
+              color: typeColor,
+              padding: '2px 8px',
+              borderRadius: 4,
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: 0.5,
+            }}>
+              {typeLabel}
+            </span>
+            <span style={{ fontSize: 15, fontWeight: 700 }}>{prop.player}</span>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            {prop.player_team} &middot; {prop.matchup}
+          </div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <span style={{ color: CONF_COLOR[prop.confidence], fontSize: 12, fontWeight: 700 }}>
+            {prop.confidence}
+          </span>
+          <div style={{
+            fontFamily: 'JetBrains Mono, monospace',
+            fontSize: 11,
+            color: 'var(--text-muted)',
+            marginTop: 2,
+          }}>
+            {prop.confidence_score}/100
+          </div>
+        </div>
+      </div>
+
+      <div style={{
+        background: `${typeColor}08`,
+        border: `1px solid ${typeColor}20`,
+        borderRadius: 8,
+        padding: '8px 12px',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+      }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 800, color: typeColor }}>
+            {prop.recommendation} {prop.line} {prop.type === 'home_run' ? '' : prop.type === 'pitcher_strikeouts' ? 'Ks' : prop.type.replace('_', ' ')}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+            Projected: <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{prop.projected_value}</span>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 8, lineHeight: 1.5 }}>
+        {prop.reasoning}
+      </div>
+    </div>
+  )
+}
+
+/* ─── SEASON EDGE ROW ─────────────────────────────────────── */
 function SeasonEdgeRow({ edge }) {
   const isPass = edge.recommendation === 'PASS'
   const color = SIDE_COLOR[edge.recommendation] || 'var(--text-muted)'
@@ -262,12 +441,15 @@ function SeasonEdgeRow({ edge }) {
   )
 }
 
+/* ─── MAIN PAGE ───────────────────────────────────────────── */
 export default function EdgePage() {
   const [tab, setTab] = useState('today')
   const [todayData, setTodayData] = useState(null)
   const [seasonData, setSeasonData] = useState(null)
+  const [propsData, setPropsData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [propsFilter, setPropsFilter] = useState('all')
 
   useEffect(() => {
     async function load() {
@@ -277,6 +459,9 @@ export default function EdgePage() {
         if (tab === 'today') {
           const { data } = await api.get('/edge/today')
           setTodayData(data)
+        } else if (tab === 'props') {
+          const { data } = await api.get('/edge/props')
+          setPropsData(data)
         } else {
           const { data } = await api.get('/edge/season')
           setSeasonData(data)
@@ -288,6 +473,10 @@ export default function EdgePage() {
     }
     load()
   }, [tab])
+
+  const filteredProps = propsData?.props?.filter(p =>
+    propsFilter === 'all' || p.type === propsFilter
+  ) || []
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '24px 16px' }}>
@@ -302,9 +491,10 @@ export default function EdgePage() {
       </div>
 
       {/* Tabs */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 20 }}>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 20, flexWrap: 'wrap' }}>
         {[
           { key: 'today', label: "Today's Games" },
+          { key: 'props', label: 'Player Props' },
           { key: 'season', label: 'Season Totals' },
         ].map(t => (
           <button
@@ -328,7 +518,7 @@ export default function EdgePage() {
 
       {loading && (
         <div style={{ textAlign: 'center', padding: 48, color: 'var(--text-muted)' }}>
-          Loading odds data...
+          Loading...
         </div>
       )}
 
@@ -338,16 +528,14 @@ export default function EdgePage() {
         </div>
       )}
 
-      {/* TODAY TAB */}
+      {/* ═══ TODAY TAB ═══ */}
       {!loading && !error && tab === 'today' && todayData && (
         <>
+          {/* Bet Slip — the main attraction */}
+          {todayData.bet_slip && <BetSlip slip={todayData.bet_slip} />}
+
           {/* Summary bar */}
-          <div style={{
-            display: 'flex',
-            gap: 16,
-            marginBottom: 20,
-            flexWrap: 'wrap',
-          }}>
+          <div style={{ display: 'flex', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
             {[
               { label: 'Games', value: todayData.total_games },
               { label: 'Value Bets', value: todayData.value_bets, color: '#22c55e' },
@@ -366,61 +554,7 @@ export default function EdgePage() {
                 </span>
               </div>
             ))}
-            <div style={{
-              background: 'var(--bg-surface)',
-              border: '1px solid var(--border)',
-              borderRadius: 8,
-              padding: '10px 16px',
-              fontSize: 12,
-              color: 'var(--text-muted)',
-            }}>
-              {todayData.quota}
-            </div>
           </div>
-
-          {/* Best bet highlight */}
-          {todayData.best_bet && (
-            <div style={{
-              background: 'linear-gradient(135deg, rgba(34,197,94,0.08), rgba(249,115,22,0.08))',
-              border: '2px solid #22c55e40',
-              borderRadius: 12,
-              padding: 20,
-              marginBottom: 20,
-            }}>
-              <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.5, color: '#22c55e', fontWeight: 700, marginBottom: 8 }}>
-                Best Bet of the Day
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-                <div>
-                  <div style={{ fontSize: 18, fontWeight: 800 }}>
-                    {todayData.best_bet.value_team}
-                  </div>
-                  <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 2 }}>
-                    {todayData.best_bet.away_team} @ {todayData.best_bet.home_team}
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>EV/$100</div>
-                    <EVBadge ev={todayData.best_bet.ev_per_100} />
-                  </div>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Best Line</div>
-                    <MoneylineTag
-                      ml={todayData.best_bet.value_side === 'HOME' ? todayData.best_bet.best_home_ml : todayData.best_bet.best_away_ml}
-                      book={todayData.best_bet.best_book}
-                    />
-                  </div>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Kelly Bet</div>
-                    <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, color: 'var(--accent)', fontSize: 14 }}>
-                      ${todayData.best_bet.kelly_bet_on_100.toFixed(2)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Game cards */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -437,14 +571,84 @@ export default function EdgePage() {
         </>
       )}
 
-      {/* SEASON TAB */}
+      {/* ═══ PROPS TAB ═══ */}
+      {!loading && !error && tab === 'props' && propsData && (
+        <>
+          <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
+            <div style={{
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              padding: '10px 16px',
+              fontSize: 13,
+            }}>
+              <span style={{ color: 'var(--text-muted)' }}>Total Props: </span>
+              <span style={{ fontWeight: 700, fontFamily: 'JetBrains Mono, monospace' }}>
+                {propsData.total_props}
+              </span>
+            </div>
+            <div style={{
+              background: 'var(--bg-surface)',
+              border: '1px solid #22c55e30',
+              borderRadius: 8,
+              padding: '10px 16px',
+              fontSize: 13,
+            }}>
+              <span style={{ color: 'var(--text-muted)' }}>Strong: </span>
+              <span style={{ fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', color: '#22c55e' }}>
+                {propsData.strong_props}
+              </span>
+            </div>
+          </div>
+
+          {/* Filter buttons */}
+          <div style={{ display: 'flex', gap: 4, marginBottom: 16, flexWrap: 'wrap' }}>
+            {[
+              { key: 'all', label: 'All' },
+              { key: 'pitcher_strikeouts', label: 'Pitcher Ks', color: PROP_TYPE_COLOR.pitcher_strikeouts },
+              { key: 'strikeout', label: 'Batter Ks', color: PROP_TYPE_COLOR.strikeout },
+              { key: 'hits', label: 'Hits', color: PROP_TYPE_COLOR.hits },
+              { key: 'home_run', label: 'Home Runs', color: PROP_TYPE_COLOR.home_run },
+              { key: 'total_bases', label: 'Total Bases', color: PROP_TYPE_COLOR.total_bases },
+            ].map(f => (
+              <button
+                key={f.key}
+                onClick={() => setPropsFilter(f.key)}
+                style={{
+                  padding: '6px 14px',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  fontWeight: propsFilter === f.key ? 700 : 400,
+                  color: propsFilter === f.key ? (f.color || 'var(--accent)') : 'var(--text-secondary)',
+                  background: propsFilter === f.key ? `${f.color || 'var(--accent)'}15` : 'transparent',
+                  border: `1px solid ${propsFilter === f.key ? (f.color || 'var(--accent)') + '50' : 'var(--border)'}`,
+                  cursor: 'pointer',
+                }}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Props grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 12 }}>
+            {filteredProps.map((prop, i) => (
+              <PropCard key={i} prop={prop} />
+            ))}
+          </div>
+
+          {filteredProps.length === 0 && (
+            <div style={{ textAlign: 'center', padding: 48, color: 'var(--text-muted)' }}>
+              {propsData.message || 'No player props available for today\'s games.'}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ═══ SEASON TAB ═══ */}
       {!loading && !error && tab === 'season' && seasonData && (
         <>
-          <div style={{
-            display: 'flex',
-            gap: 16,
-            marginBottom: 20,
-          }}>
+          <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
             <div style={{
               background: 'var(--bg-surface)',
               border: '1px solid var(--border)',
