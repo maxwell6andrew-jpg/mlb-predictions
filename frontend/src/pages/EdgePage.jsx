@@ -574,6 +574,123 @@ export default function EdgePage() {
       {/* ═══ PROPS TAB ═══ */}
       {!loading && !error && tab === 'props' && propsData && (
         <>
+          {/* Props Bet Slip */}
+          {propsData.bet_slip && propsData.bet_slip.bets.length > 0 && (
+            <div style={{
+              background: 'linear-gradient(135deg, rgba(168,85,247,0.06), rgba(59,130,246,0.06))',
+              border: '2px solid #a855f730',
+              borderRadius: 14,
+              padding: 20,
+              marginBottom: 24,
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <div>
+                  <div style={{ fontSize: 18, fontWeight: 800 }}>Props Bet Slip</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                    $100 bankroll &middot; {propsData.bet_slip.num_bets} prop{propsData.bet_slip.num_bets !== 1 ? 's' : ''} &middot; confidence-weighted
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>TOTAL WAGERED</div>
+                  <div style={{ fontSize: 20, fontWeight: 800, fontFamily: 'JetBrains Mono, monospace', color: '#a855f7' }}>
+                    ${propsData.bet_slip.total_wagered.toFixed(2)}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {propsData.bet_slip.bets.map((bet, i) => {
+                  const typeColor = PROP_TYPE_COLOR[bet.type] || 'var(--text-muted)'
+                  const typeLabel = PROP_TYPE_LABEL[bet.type] || bet.type
+                  return (
+                    <div key={i} style={{
+                      background: 'var(--bg-surface)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 10,
+                      padding: '10px 14px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: 10,
+                      flexWrap: 'wrap',
+                    }}>
+                      <div style={{ flex: '1 1 220px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{
+                            background: `${typeColor}20`,
+                            color: typeColor,
+                            padding: '1px 6px',
+                            borderRadius: 3,
+                            fontSize: 10,
+                            fontWeight: 700,
+                          }}>{typeLabel}</span>
+                          <span style={{ fontWeight: 700, fontSize: 14 }}>{bet.player}</span>
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                          {bet.prop} &middot; {bet.matchup}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <div style={{ textAlign: 'center', minWidth: 45 }}>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>PROJ</div>
+                          <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13 }}>
+                            {bet.projected_value}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: 'center', minWidth: 45 }}>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>ODDS</div>
+                          <MoneylineTag ml={bet.est_odds} />
+                        </div>
+                        <div style={{
+                          textAlign: 'center',
+                          minWidth: 60,
+                          background: '#a855f715',
+                          borderRadius: 8,
+                          padding: '4px 10px',
+                        }}>
+                          <div style={{ fontSize: 10, color: '#a855f7', fontWeight: 700 }}>BET</div>
+                          <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 800, fontSize: 15, color: '#a855f7' }}>
+                            ${bet.bet_amount.toFixed(2)}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: 'center', minWidth: 50 }}>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>WIN</div>
+                          <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 13, color: '#22c55e' }}>
+                            +${bet.potential_profit.toFixed(2)}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                marginTop: 14,
+                paddingTop: 14,
+                borderTop: '1px solid var(--border)',
+                fontSize: 13,
+                flexWrap: 'wrap',
+                gap: 12,
+              }}>
+                <div>
+                  <span style={{ color: 'var(--text-muted)' }}>Remaining: </span>
+                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+                    ${propsData.bet_slip.remaining_bankroll.toFixed(2)}
+                  </span>
+                </div>
+                <div>
+                  <span style={{ color: 'var(--text-muted)' }}>If all hit: </span>
+                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, color: '#22c55e' }}>
+                    +${propsData.bet_slip.total_potential_profit.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
             <div style={{
               background: 'var(--bg-surface)',

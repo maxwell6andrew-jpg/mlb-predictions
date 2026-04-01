@@ -473,11 +473,73 @@ async def edge_props(request: Request):
     # Sort by confidence (strongest props first)
     all_props.sort(key=lambda p: p["confidence_score"], reverse=True)
 
+    # --- BUILD $100 PROPS BET SLIP ---
+    # Allocate bankroll across top props by confidence-weighted sizing
+    bankroll = 100.0
+    props_bet_slip = []
+    remaining = bankroll
+    for prop in all_props:
+        if prop["confidence_score"] < 55:
+            continue  # Skip weak props
+        # Size by confidence: strong=5%, moderate=3%, lean=2% of bankroll
+        if prop["confidence_score"] >= 75:
+            pct = 0.05
+        elif prop["confidence_score"] >= 60:
+            pct = 0.03
+        else:
+            pct = 0.02
+        bet_amount = round(bankroll * pct, 2)
+        if bet_amount > remaining:
+            bet_amount = round(remaining, 2)
+        if bet_amount < 1.0:
+            break
+        remaining -= bet_amount
+
+        # Estimate payout (typical prop odds: -115 for overs, +100 for HR)
+        if prop["type"] == "home_run":
+            est_odds = +320  # HR props typically +300 to +350
+        elif prop["type"] == "total_bases":
+            est_odds = -115
+        elif prop["type"] == "pitcher_strikeouts":
+            est_odds = -120
+        else:
+            est_odds = -120  # hits/Ks overs typically -115 to -125
+
+        dec = _decimal_odds(est_odds)
+        potential_profit = round(bet_amount * (dec - 1), 2)
+
+        props_bet_slip.append({
+            "player": prop["player"],
+            "player_team": prop["player_team"],
+            "prop": prop["prop"],
+            "type": prop["type"],
+            "matchup": prop["matchup"],
+            "projected_value": prop["projected_value"],
+            "confidence": prop["confidence"],
+            "confidence_score": prop["confidence_score"],
+            "est_odds": est_odds,
+            "bet_amount": bet_amount,
+            "potential_profit": potential_profit,
+            "reasoning": prop["reasoning"],
+            "game_time": prop["game_time"],
+        })
+
+    total_wagered = round(sum(b["bet_amount"] for b in props_bet_slip), 2)
+    total_potential_profit = round(sum(b["potential_profit"] for b in props_bet_slip), 2)
+
     return {
         "date": today,
         "props": all_props,
         "total_props": len(all_props),
         "strong_props": sum(1 for p in all_props if p["confidence_score"] >= 70),
+        "bet_slip": {
+            "bankroll": bankroll,
+            "bets": props_bet_slip,
+            "total_wagered": total_wagered,
+            "remaining_bankroll": round(bankroll - total_wagered, 2),
+            "total_potential_profit": total_potential_profit,
+            "num_bets": len(props_bet_slip),
+        },
     }
 
 
