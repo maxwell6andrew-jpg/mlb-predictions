@@ -9,6 +9,7 @@ import ModelPage from './pages/ModelPage'
 import PrivacyPage from './pages/PrivacyPage'
 import TermsPage from './pages/TermsPage'
 import DisclaimerPage from './pages/DisclaimerPage'
+import EdgePage from './pages/EdgePage'
 
 function Footer() {
   return (
@@ -59,6 +60,7 @@ export default function App() {
             <Route path="/privacy" element={<PrivacyPage />} />
             <Route path="/terms" element={<TermsPage />} />
             <Route path="/disclaimer" element={<DisclaimerPage />} />
+            <Route path="/edge" element={<EdgePage />} />
           </Routes>
         </main>
         <Footer />
