@@ -325,11 +325,12 @@ async def _compute_team_projections(app):
     print(f"  Computed projections for {len(standings_output)} teams")
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+async def _background_init(app):
+    """Heavy initialization that runs AFTER the server starts accepting requests."""
+    import asyncio
     start = datetime.now(timezone.utc)
     print("=" * 60)
-    print("MLB Predictor starting up...")
+    print("Background initialization starting...")
     print("=" * 60)
 
     # 1. Load Lahman data
@@ -606,14 +607,42 @@ async def lifespan(app: FastAPI):
 
     elapsed = (datetime.now(timezone.utc) - start).seconds
     app.state.startup_time = datetime.now(timezone.utc).isoformat()
+    app.state.ready = True
     print("=" * 60)
     print(f"MLB Predictor ready!  (startup: {elapsed}s)")
     print("=" * 60)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    import asyncio
+
+    # Set initial state so endpoints can return "loading" instead of crashing
+    app.state.ready = False
+    app.state.projection_cache = ProjectionCache()
+    app.state.standings_cache = []
+    app.state.teams_list = []
+    app.state.league_avg = {}
+    app.state.batter_statcast = {}
+    app.state.pitcher_statcast = {}
+
+    print("=" * 60)
+    print("MLB Predictor — server starting (data loads in background)...")
+    print("=" * 60)
+
+    # Launch heavy init as a background task — server binds the port NOW
+    init_task = asyncio.create_task(_background_init(app))
+
     yield
 
-    await api_client.close()
-    await statcast_client.close()
+    # Cleanup
+    init_task.cancel()
+    api_client = getattr(app.state, "api_client", None)
+    statcast_client = getattr(app.state, "statcast_client", None)
+    if api_client:
+        await api_client.close()
+    if statcast_client:
+        await statcast_client.close()
 
 
 app = FastAPI(title="MLB Predictor", lifespan=lifespan)
@@ -650,8 +679,10 @@ app.include_router(edge.router)  # unlisted — not linked from frontend
 @app.get("/api/health")
 @limiter.limit("30/minute")
 async def health(request: Request):
+    ready = getattr(request.app.state, "ready", False)
     return {
-        "status": "ok",
+        "status": "ok" if ready else "loading",
+        "ready": ready,
         "startup_time": getattr(request.app.state, "startup_time", None),
         "teams_loaded": len(getattr(request.app.state, "standings_cache", [])),
         "model_fitted": getattr(request.app.state, "team_model", None) is not None
