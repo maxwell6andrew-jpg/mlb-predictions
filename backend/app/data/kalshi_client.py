@@ -266,126 +266,117 @@ async def fetch_mlb_markets() -> list[dict]:
             today = datetime.now(pacific)
             games = []
 
-            for day_offset in [0, 1]:  # Today and tomorrow
-                target = today + timedelta(days=day_offset)
-                date_str = target.strftime("%Y-%m-%d")
-                kalshi_date = target.strftime("%y%b%d").upper()  # "26APR02"
+            # Only fetch today's games for the main market view
+            target = today
+            date_str = target.strftime("%Y-%m-%d")
+            kalshi_date = target.strftime("%y%b%d").upper()  # "26APR02"
 
-                try:
-                    sched_resp = await client.get(
-                        "https://statsapi.mlb.com/api/v1/schedule",
-                        params={"sportId": 1, "date": date_str, "hydrate": "team"},
-                        timeout=10,
-                    )
-                    sched_data = sched_resp.json()
-                    sched_dates = sched_data.get("dates", [])
-                    day_games = sched_dates[0]["games"] if sched_dates else []
-                except Exception as e:
-                    print(f"  Kalshi: MLB schedule fetch failed for {date_str}: {e}")
+            try:
+                sched_resp = await client.get(
+                    "https://statsapi.mlb.com/api/v1/schedule",
+                    params={"sportId": 1, "date": date_str, "hydrate": "team"},
+                    timeout=10,
+                )
+                sched_data = sched_resp.json()
+                sched_dates = sched_data.get("dates", [])
+                day_games = sched_dates[0]["games"] if sched_dates else []
+            except Exception as e:
+                print(f"  Kalshi: MLB schedule fetch failed for {date_str}: {e}")
+                day_games = []
+
+            print(f"  Kalshi: {len(day_games)} MLB games on {date_str}")
+
+            for g in day_games:
+                away_name = g["teams"]["away"]["team"]["name"]
+                home_name = g["teams"]["home"]["team"]["name"]
+                game_time_str = g.get("gameDate", "")
+
+                away_abbrev = team_to_abbrev.get(away_name, "")
+                home_abbrev = team_to_abbrev.get(home_name, "")
+                if not away_abbrev or not home_abbrev:
                     continue
 
-                print(f"  Kalshi: {len(day_games)} MLB games on {date_str}")
+                # Parse game time to build Kalshi ticker
+                try:
+                    game_dt = datetime.fromisoformat(game_time_str.replace("Z", "+00:00"))
+                    et = game_dt.astimezone(timezone(timedelta(hours=-4)))
+                    time_part = et.strftime("%H%M")
+                except Exception:
+                    time_part = "1900"
 
-                for g in day_games:
-                    away_name = g["teams"]["away"]["team"]["name"]
-                    home_name = g["teams"]["home"]["team"]["name"]
-                    game_time_str = g.get("gameDate", "")
+                event_ticker = f"KXMLBGAME-{kalshi_date}{time_part}{away_abbrev}{home_abbrev}"
+                away_market_ticker = f"{event_ticker}-{away_abbrev}"
+                home_market_ticker = f"{event_ticker}-{home_abbrev}"
 
-                    away_abbrev = team_to_abbrev.get(away_name, "")
-                    home_abbrev = team_to_abbrev.get(home_name, "")
-                    if not away_abbrev or not home_abbrev:
+                away_price = 0.0
+                home_price = 0.0
+                total_volume = 0
+
+                for mticker, is_away in [(away_market_ticker, True), (home_market_ticker, False)]:
+                    mpath = f"/markets/{mticker}"
+                    mheaders = _get_headers("GET", mpath, private_key)
+                    try:
+                        mresp = await client.get(f"{BASE_URL}{mpath}", headers=mheaders)
+                        if mresp.status_code == 200:
+                            m = mresp.json().get("market", {})
+                            price = _parse_dollars(m.get("last_price_dollars"))
+                            vol = m.get("volume", 0) or 0
+                            total_volume += vol
+                            if is_away:
+                                away_price = price
+                            else:
+                                home_price = price
+                    except Exception:
+                        pass
+
+                # Skip if no prices — try time offsets
+                if away_price <= 0 and home_price <= 0:
+                    found = False
+                    for offset_min in [5, -5, 10, -10, 15, -15, 30, -30]:
+                        try:
+                            alt_dt = et + timedelta(minutes=offset_min)
+                            alt_time = alt_dt.strftime("%H%M")
+                            alt_event = f"KXMLBGAME-{kalshi_date}{alt_time}{away_abbrev}{home_abbrev}"
+                            alt_ticker = f"{alt_event}-{away_abbrev}"
+                            apath = f"/markets/{alt_ticker}"
+                            aheaders = _get_headers("GET", apath, private_key)
+                            aresp = await client.get(f"{BASE_URL}{apath}", headers=aheaders)
+                            if aresp.status_code == 200:
+                                event_ticker = alt_event
+                                m = aresp.json().get("market", {})
+                                away_price = _parse_dollars(m.get("last_price_dollars"))
+                                hpath = f"/markets/{alt_event}-{home_abbrev}"
+                                hheaders = _get_headers("GET", hpath, private_key)
+                                hresp = await client.get(f"{BASE_URL}{hpath}", headers=hheaders)
+                                if hresp.status_code == 200:
+                                    hm = hresp.json().get("market", {})
+                                    home_price = _parse_dollars(hm.get("last_price_dollars"))
+                                found = True
+                                break
+                        except Exception:
+                            continue
+                    if not found:
                         continue
 
-                    # Parse game time to build Kalshi ticker
-                    # gameDate is ISO: "2026-04-02T23:10:00Z" → need ET
-                    try:
-                        game_dt = datetime.fromisoformat(game_time_str.replace("Z", "+00:00"))
-                        et = game_dt.astimezone(timezone(timedelta(hours=-4)))
-                        time_part = et.strftime("%H%M")  # "1910"
-                    except Exception:
-                        time_part = "1900"  # fallback
+                # Infer missing side
+                if away_price > 0 and home_price <= 0:
+                    home_price = 1.0 - away_price
+                elif home_price > 0 and away_price <= 0:
+                    away_price = 1.0 - home_price
 
-                    # Construct event ticker: KXMLBGAME-26APR021910ATLAZ
-                    event_ticker = f"KXMLBGAME-{kalshi_date}{time_part}{away_abbrev}{home_abbrev}"
-
-                    # Fetch both team markets directly
-                    away_market_ticker = f"{event_ticker}-{away_abbrev}"
-                    home_market_ticker = f"{event_ticker}-{home_abbrev}"
-
-                    away_price = 0.0
-                    home_price = 0.0
-                    total_volume = 0
-
-                    for mticker, is_away in [(away_market_ticker, True), (home_market_ticker, False)]:
-                        mpath = f"/markets/{mticker}"
-                        mheaders = _get_headers("GET", mpath, private_key)
-                        try:
-                            mresp = await client.get(f"{BASE_URL}{mpath}", headers=mheaders)
-                            if mresp.status_code == 200:
-                                m = mresp.json().get("market", {})
-                                price = _parse_dollars(m.get("last_price_dollars"))
-                                vol = m.get("volume", 0) or 0
-                                total_volume += vol
-                                if is_away:
-                                    away_price = price
-                                else:
-                                    home_price = price
-                            elif mresp.status_code == 404:
-                                # Try with different time offsets (Kalshi time might differ by a few min)
-                                pass
-                        except Exception:
-                            pass
-
-                    # Skip if no prices found
-                    if away_price <= 0 and home_price <= 0:
-                        # Try nearby time offsets (±5 min, ±10 min)
-                        found = False
-                        for offset_min in [5, -5, 10, -10, 15, -15, 30, -30]:
-                            try:
-                                alt_dt = et + timedelta(minutes=offset_min)
-                                alt_time = alt_dt.strftime("%H%M")
-                                alt_event = f"KXMLBGAME-{kalshi_date}{alt_time}{away_abbrev}{home_abbrev}"
-                                alt_ticker = f"{alt_event}-{away_abbrev}"
-                                apath = f"/markets/{alt_ticker}"
-                                aheaders = _get_headers("GET", apath, private_key)
-                                aresp = await client.get(f"{BASE_URL}{apath}", headers=aheaders)
-                                if aresp.status_code == 200:
-                                    event_ticker = alt_event
-                                    m = aresp.json().get("market", {})
-                                    away_price = _parse_dollars(m.get("last_price_dollars"))
-                                    # Also get home
-                                    hpath = f"/markets/{alt_event}-{home_abbrev}"
-                                    hheaders = _get_headers("GET", hpath, private_key)
-                                    hresp = await client.get(f"{BASE_URL}{hpath}", headers=hheaders)
-                                    if hresp.status_code == 200:
-                                        hm = hresp.json().get("market", {})
-                                        home_price = _parse_dollars(hm.get("last_price_dollars"))
-                                    found = True
-                                    break
-                            except Exception:
-                                continue
-                        if not found:
-                            continue
-
-                    # Infer missing side
-                    if away_price > 0 and home_price <= 0:
-                        home_price = 1.0 - away_price
-                    elif home_price > 0 and away_price <= 0:
-                        away_price = 1.0 - home_price
-
-                    games.append({
-                        "event_ticker": event_ticker,
-                        "title": f"{away_name} vs {home_name}",
-                        "home_team": home_name,
-                        "away_team": away_name,
-                        "home_price": round(home_price, 4),
-                        "away_price": round(away_price, 4),
-                        "home_ticker": f"{event_ticker}-{home_abbrev}",
-                        "away_ticker": f"{event_ticker}-{away_abbrev}",
-                        "volume": total_volume,
-                        "game_date": date_str,
-                        "game_time_iso": game_time_str,
-                    })
+                games.append({
+                    "event_ticker": event_ticker,
+                    "title": f"{away_name} vs {home_name}",
+                    "home_team": home_name,
+                    "away_team": away_name,
+                    "home_price": round(home_price, 4),
+                    "away_price": round(away_price, 4),
+                    "home_ticker": f"{event_ticker}-{home_abbrev}",
+                    "away_ticker": f"{event_ticker}-{away_abbrev}",
+                    "volume": total_volume,
+                    "game_date": date_str,
+                    "game_time_iso": game_time_str,
+                })
 
             _markets_cache = {"games": games}
             _cache_time = now

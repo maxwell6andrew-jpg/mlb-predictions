@@ -630,6 +630,8 @@ async def lifespan(app: FastAPI):
     print("=" * 60, flush=True)
     print("MLB Predictor — server starting (data loads in background)...", flush=True)
     print(f"Python {sys.version}", flush=True)
+    print(f"PORT env: {os.environ.get('PORT', 'NOT SET')}", flush=True)
+    print(f"KALSHI_API_KEY set: {bool(os.environ.get('KALSHI_API_KEY'))}", flush=True)
     print("=" * 60, flush=True)
 
     # Launch heavy init as a background task — server binds the port NOW

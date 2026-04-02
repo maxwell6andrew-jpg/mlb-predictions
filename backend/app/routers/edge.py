@@ -355,26 +355,35 @@ async def edge_today(request: Request):
 @limiter.limit("10/minute")
 async def edge_props(request: Request):
     """
-    Player prop recommendations based on pitcher/batter matchup projections.
-    Uses our Marcel projections + Statcast adjustments to find edges in:
-    - Strikeout props (pitcher K rate vs batter K rate)
-    - Hit props (batter AVG vs pitcher WHIP)
-    - HR props (batter HR rate vs pitcher HR/9, park factor)
-    - Total bases props (batter SLG vs pitcher quality)
+    Kalshi player prop edges — real prediction market prices vs our model.
+
+    Only shows props that have Kalshi contracts with prices.
+    Edge = model probability - Kalshi contract price.
+
+    Hit props: model P(1+ hits) = 1 - (1 - matchup_AVG)^AB
     """
     cache = request.app.state.projection_cache
-    standings = getattr(request.app.state, "standings_cache", [])
     api_client = request.app.state.api_client
     id_mapper = request.app.state.id_mapper
 
     pacific = timezone(timedelta(hours=-7))
     today = datetime.now(pacific).strftime("%Y-%m-%d")
 
-    # Fetch today's schedule with probable pitchers
+    # Fetch Kalshi prop markets
+    kalshi_props = await fetch_mlb_prop_markets()
+    if not kalshi_props:
+        return {
+            "date": today,
+            "props": [],
+            "message": "No Kalshi prop markets found. Markets may not be posted yet.",
+            "kalshi_status": get_kalshi_status(),
+        }
+
+    # Fetch today's schedule for game times and pitchers
     try:
         data = await api_client._get(
             "/schedule",
-            params={"sportId": 1, "date": today, "hydrate": "probablePitcher,team,linescore"},
+            params={"sportId": 1, "date": today, "hydrate": "probablePitcher,team"},
             cache_ttl=300,
         )
         dates = data.get("dates", [])
@@ -382,254 +391,240 @@ async def edge_props(request: Request):
     except Exception:
         games_raw = []
 
-    if not games_raw:
-        return {"date": today, "props": [], "message": "No games scheduled today."}
+    # Build pitcher lookup: team_name → pitcher projection
+    pitcher_by_team = {}
+    for g in games_raw:
+        for side in ["away", "home"]:
+            info = g["teams"][side]
+            team_name = info["team"]["name"]
+            sp_meta = info.get("probablePitcher", {})
+            sp_mlbam = sp_meta.get("id")
+            sp_name = sp_meta.get("fullName", "TBD")
+            if sp_mlbam:
+                sp_proj = _pitcher_from_cache(sp_mlbam, cache, id_mapper)
+                if sp_proj:
+                    pitcher_by_team[team_name] = {
+                        "name": sp_name,
+                        "proj": sp_proj,
+                    }
+
+    # Build game time lookup
+    game_times = {}
+    for g in games_raw:
+        home = g["teams"]["home"]["team"]["name"]
+        away = g["teams"]["away"]["team"]["name"]
+        gt = g.get("gameDate", "")
+        game_times[home] = gt
+        game_times[away] = gt
 
     all_props = []
 
-    for g in games_raw:
-        away_info = g["teams"]["away"]
-        home_info = g["teams"]["home"]
-        away_id = away_info["team"]["id"]
-        home_id = home_info["team"]["id"]
-        away_name = away_info["team"]["name"]
-        home_name = home_info["team"]["name"]
-
-        # Get probable pitchers
-        away_sp_meta = away_info.get("probablePitcher", {})
-        home_sp_meta = home_info.get("probablePitcher", {})
-        away_sp_mlbam = away_sp_meta.get("id")
-        home_sp_mlbam = home_sp_meta.get("id")
-        away_sp_name = away_sp_meta.get("fullName", "TBD")
-        home_sp_name = home_sp_meta.get("fullName", "TBD")
-
-        # Pitcher projections
-        away_sp_proj = _pitcher_from_cache(away_sp_mlbam, cache, id_mapper) if away_sp_mlbam else None
-        home_sp_proj = _pitcher_from_cache(home_sp_mlbam, cache, id_mapper) if home_sp_mlbam else None
-
-        # Team projections (contain batter lists)
-        home_team_proj = cache.get_team(home_id)
-        away_team_proj = cache.get_team(away_id)
-
-        park = get_park_factor(home_id, "runs")
-        park_hr = get_park_factor(home_id, "hr") if hasattr(get_park_factor, '__call__') else park
-
-        game_time = g.get("gameDate", "")
-
-        # Generate props for away batters vs home pitcher
-        if home_sp_proj and away_team_proj:
-            props = _generate_batter_props(
-                batters=away_team_proj.get("batters", []),
-                pitcher=home_sp_proj,
-                pitcher_name=home_sp_name,
-                pitcher_team=home_name,
-                batter_team=away_name,
-                cache=cache,
-                id_mapper=id_mapper,
-                park_factor=park,
-                game_time=game_time,
-            )
-            all_props.extend(props)
-
-        # Generate props for home batters vs away pitcher
-        if away_sp_proj and home_team_proj:
-            props = _generate_batter_props(
-                batters=home_team_proj.get("batters", []),
-                pitcher=away_sp_proj,
-                pitcher_name=away_sp_name,
-                pitcher_team=away_name,
-                batter_team=home_name,
-                cache=cache,
-                id_mapper=id_mapper,
-                park_factor=park,
-                game_time=game_time,
-            )
-            all_props.extend(props)
-
-        # Pitcher strikeout props
-        if home_sp_proj and away_team_proj:
-            k_prop = _generate_pitcher_k_prop(
-                pitcher=home_sp_proj,
-                pitcher_name=home_sp_name,
-                pitcher_team=home_name,
-                opp_team=away_name,
-                opp_batters=away_team_proj.get("batters", []),
-                cache=cache,
-                id_mapper=id_mapper,
-                game_time=game_time,
-            )
-            if k_prop:
-                all_props.append(k_prop)
-
-        if away_sp_proj and home_team_proj:
-            k_prop = _generate_pitcher_k_prop(
-                pitcher=away_sp_proj,
-                pitcher_name=away_sp_name,
-                pitcher_team=away_name,
-                opp_team=home_name,
-                opp_batters=home_team_proj.get("batters", []),
-                cache=cache,
-                id_mapper=id_mapper,
-                game_time=game_time,
-            )
-            if k_prop:
-                all_props.append(k_prop)
-
-    # --- MATCH WITH KALSHI PROP MARKETS ---
-    kalshi_props = await fetch_mlb_prop_markets()
-
-    # Build lookup: normalize player name → list of Kalshi hit props
-    kalshi_hit_props = {}
     for kp in kalshi_props:
-        if kp.get("prop_type") == "KXMLBHIT" and kp.get("player_name"):
-            name_key = kp["player_name"].lower().strip()
-            if name_key not in kalshi_hit_props:
-                kalshi_hit_props[name_key] = []
-            kalshi_hit_props[name_key].append(kp)
+        if kp.get("prop_type") != "KXMLBHIT":
+            continue  # Only hit props for now (most liquid + our model covers)
+        if not kp.get("player_name") or kp.get("price", 0) <= 0:
+            continue
 
-    # Enrich model props with Kalshi market prices
-    for prop in all_props:
-        player_name = prop.get("player", "").lower().strip()
+        player_name = kp["player_name"]
+        kalshi_price = kp["price"]
+        hit_line = kp.get("line", 1)  # 1, 2, 3, 4
+        player_team = kp.get("player_team", "")
+        home_team = kp.get("home_team", "")
+        away_team = kp.get("away_team", "")
+        game_time = kp.get("game_time_iso", "")
 
-        if prop["type"] in ("hits", "strikeout") and player_name in kalshi_hit_props:
-            # Find matching hit count line
-            kalshi_matches = kalshi_hit_props[player_name]
-            # For hits OVER 0.5 → match Kalshi 1+ hits
-            # For strikeout → no direct Kalshi match yet
-            if prop["type"] == "hits":
-                # Our line is 0.5 hits → Kalshi "1+ hits" is equivalent
-                for km in kalshi_matches:
-                    if km.get("line") == 1:
-                        prop["kalshi_price"] = km["price"]
-                        prop["kalshi_ticker"] = km["ticker"]
-                        prop["kalshi_label"] = km.get("prop_label", "")
-                        # Edge = model implied prob of OVER - (1 - kalshi NO price)
-                        # Kalshi YES price = implied prob of 1+ hits
-                        # If our model says higher prob → buy YES
-                        model_hit_prob = min(0.95, prop["projected_value"] / 1.0)  # rough
-                        # More accurate: P(1+ hit) = 1 - (1-AVG)^AB
-                        prop["kalshi_edge"] = round((model_hit_prob - km["price"]) * 100, 2)
-                        break
-                # Also attach 2+ hits market if available
-                for km in kalshi_matches:
-                    if km.get("line") == 2:
-                        prop["kalshi_2plus_price"] = km["price"]
-                        prop["kalshi_2plus_ticker"] = km["ticker"]
-                        break
+        # Determine opposing pitcher
+        if player_team == home_team:
+            opp_team = away_team
+        elif player_team == away_team:
+            opp_team = home_team
+        else:
+            opp_team = ""
 
-        elif prop["type"] == "home_run" and player_name:
-            # No direct Kalshi HR prop yet, but check anyway
-            pass
+        opp_pitcher_info = pitcher_by_team.get(opp_team) if opp_team else None
+        opp_pitcher_name = opp_pitcher_info["name"] if opp_pitcher_info else "Unknown"
+        opp_pitcher_proj = opp_pitcher_info["proj"] if opp_pitcher_info else None
 
-    # Sort by confidence (strongest props first)
-    all_props.sort(key=lambda p: p["confidence_score"], reverse=True)
+        # Pitcher quality multiplier
+        if opp_pitcher_proj:
+            p_whip = opp_pitcher_proj.get("whip", 1.30)
+            pitcher_hit_mult = p_whip / 1.30  # >1 = gives up more hits
+        else:
+            pitcher_hit_mult = 1.0
 
-    # --- BUILD $100 PROPS BET SLIP (with real Kalshi prices) ---
+        # Try to find batter projection by name match
+        batter_avg = None
+        batter_proj_data = None
+
+        # Search through cached batters for name match
+        for lahman_id, proj in cache.batting.items():
+            proj_name = proj.get("name", "")
+            if proj_name.lower().strip() == player_name.lower().strip():
+                batter_avg = proj.get("avg", LG_AVG)
+                batter_proj_data = proj
+                break
+
+        if batter_avg is None:
+            batter_avg = LG_AVG  # fallback to league average
+
+        # Matchup-adjusted AVG
+        matchup_avg = min(0.400, batter_avg * pitcher_hit_mult)
+
+        # Model probability calculations
+        # P(1+ hits in ~4 AB) = 1 - (1 - AVG)^4
+        # P(2+ hits in ~4 AB) = 1 - (1-AVG)^4 - 4*AVG*(1-AVG)^3
+        # P(3+ hits) = 1 - P(0) - P(1) - P(2)
+        ab = 4.0  # expected at-bats
+        p_no_hit = (1 - matchup_avg) ** ab
+
+        if hit_line == 1:
+            model_prob = 1 - p_no_hit  # P(1+ hits)
+        elif hit_line == 2:
+            p_exactly_1 = ab * matchup_avg * ((1 - matchup_avg) ** (ab - 1))
+            model_prob = 1 - p_no_hit - p_exactly_1  # P(2+ hits)
+        elif hit_line == 3:
+            p_exactly_1 = ab * matchup_avg * ((1 - matchup_avg) ** (ab - 1))
+            p_exactly_2 = (ab * (ab - 1) / 2) * (matchup_avg ** 2) * ((1 - matchup_avg) ** (ab - 2))
+            model_prob = 1 - p_no_hit - p_exactly_1 - p_exactly_2
+        else:
+            model_prob = 0.05  # 4+ hits is rare, rough estimate
+
+        model_prob = max(0.01, min(0.99, model_prob))
+
+        # Edge = model probability - Kalshi contract price
+        edge = model_prob - kalshi_price
+        edge_pct = round(edge * 100, 1)
+
+        # Skip tiny/no edges
+        if abs(edge_pct) < 1:
+            continue
+
+        # Determine if game has started
+        started = False
+        if game_time:
+            try:
+                game_dt = datetime.fromisoformat(game_time.replace("Z", "+00:00"))
+                started = game_dt < datetime.now(timezone.utc)
+            except Exception:
+                pass
+
+        # Recommendation
+        if edge_pct > 3:
+            recommendation = "BUY YES"
+            strength = "STRONG" if edge_pct > 8 else "MODERATE" if edge_pct > 5 else "LEAN"
+        elif edge_pct < -3:
+            recommendation = "BUY NO"
+            strength = "STRONG" if edge_pct < -8 else "MODERATE" if edge_pct < -5 else "LEAN"
+        else:
+            recommendation = "PASS"
+            strength = "NO EDGE"
+
+        # EV calculation
+        if edge_pct > 0:
+            dec_odds = 1 / kalshi_price if kalshi_price > 0 else 1
+            ev = _ev(model_prob, dec_odds)
+        elif edge_pct < 0:
+            no_price = 1 - kalshi_price
+            dec_odds = 1 / no_price if no_price > 0 else 1
+            ev = _ev(1 - model_prob, dec_odds)
+        else:
+            ev = 0
+
+        all_props.append({
+            "player": player_name,
+            "player_team": player_team,
+            "opp_team": opp_team,
+            "matchup": f"vs {opp_pitcher_name} ({opp_team})" if opp_team else "",
+            "prop": f"{hit_line}+ hits",
+            "type": "hits",
+            "hit_line": hit_line,
+            "kalshi_price": round(kalshi_price, 4),
+            "kalshi_ticker": kp.get("ticker", ""),
+            "model_prob": round(model_prob, 3),
+            "edge_pct": edge_pct,
+            "ev_per_100": round(ev, 2),
+            "recommendation": recommendation,
+            "strength": strength,
+            "matchup_avg": round(matchup_avg, 3),
+            "batter_avg": round(batter_avg, 3),
+            "pitcher_mult": round(pitcher_hit_mult, 2),
+            "game_time": game_time,
+            "started": started,
+            "reasoning": (
+                f"{player_name} .{int(batter_avg * 1000)} AVG"
+                f"{f' (adj .{int(matchup_avg * 1000)} vs {opp_pitcher_name})' if opp_pitcher_proj else ''}"
+                f" → {model_prob:.0%} chance of {hit_line}+ hits"
+                f" | Kalshi {int(kalshi_price * 100)}¢"
+                f" | Edge {'+' if edge_pct > 0 else ''}{edge_pct}%"
+            ),
+        })
+
+    # Sort by absolute edge (biggest edges first), BUY YES first
+    all_props.sort(key=lambda p: (p["recommendation"] != "PASS", abs(p["edge_pct"])), reverse=True)
+
+    # --- BUILD $100 BET SLIP (Kalshi only) ---
     bankroll = 100.0
-    props_bet_slip = []
+    bet_slip_bets = []
     remaining = bankroll
 
     for prop in all_props:
-        if prop["confidence_score"] < 55:
+        if prop["recommendation"] == "PASS" or prop["started"]:
+            continue
+        if prop["ev_per_100"] <= 0:
             continue
 
-        kalshi_price = prop.get("kalshi_price", 0)
-        has_kalshi = kalshi_price > 0
-
-        # Size by confidence: strong=5%, moderate=3%, lean=2% of bankroll
-        if prop["confidence_score"] >= 75:
-            pct = 0.05
-        elif prop["confidence_score"] >= 60:
-            pct = 0.03
+        # Kelly sizing
+        if prop["recommendation"] == "BUY YES":
+            buy_price = prop["kalshi_price"]
         else:
-            pct = 0.02
-        bet_amount = round(bankroll * pct, 2)
-        if bet_amount > remaining:
-            bet_amount = round(remaining, 2)
-        if bet_amount < 1.0:
+            buy_price = 1 - prop["kalshi_price"]  # BUY NO
+
+        dec_odds = 1 / buy_price if buy_price > 0 else 1
+        kelly = _kelly(
+            prop["model_prob"] if prop["recommendation"] == "BUY YES" else (1 - prop["model_prob"]),
+            dec_odds,
+        )
+        bet_amount = round(max(1.0, min(bankroll * kelly, remaining)), 2)
+        if bet_amount < 1.0 or remaining < 1.0:
             break
         remaining -= bet_amount
 
-        if has_kalshi:
-            # Real Kalshi payout: buy YES at kalshi_price, pays $1 if correct
-            contracts = bet_amount / kalshi_price
-            potential_payout = round(contracts * 1.0, 2)
-            potential_profit = round(potential_payout - bet_amount, 2)
-            dec_odds = round(1 / kalshi_price, 2)
-        else:
-            # Fallback: estimated odds
-            if prop["type"] == "home_run":
-                est_odds = +320
-            elif prop["type"] == "total_bases":
-                est_odds = -115
-            elif prop["type"] == "pitcher_strikeouts":
-                est_odds = -120
-            else:
-                est_odds = -120
-            dec_odds = round(_decimal_odds(est_odds), 2)
-            potential_profit = round(bet_amount * (dec_odds - 1), 2)
-            contracts = 0
-            potential_payout = round(bet_amount + potential_profit, 2)
+        contracts = bet_amount / buy_price if buy_price > 0 else 0
+        potential_payout = round(contracts, 2)
+        potential_profit = round(potential_payout - bet_amount, 2)
 
-        props_bet_slip.append({
+        bet_slip_bets.append({
             "player": prop["player"],
             "player_team": prop["player_team"],
             "prop": prop["prop"],
-            "type": prop["type"],
             "matchup": prop["matchup"],
-            "projected_value": prop["projected_value"],
-            "confidence": prop["confidence"],
-            "confidence_score": prop["confidence_score"],
-            "kalshi_price": kalshi_price if has_kalshi else None,
-            "kalshi_ticker": prop.get("kalshi_ticker", ""),
-            "kalshi_2plus_price": prop.get("kalshi_2plus_price"),
-            "kalshi_2plus_ticker": prop.get("kalshi_2plus_ticker", ""),
-            "kalshi_edge": prop.get("kalshi_edge"),
-            "has_kalshi": has_kalshi,
-            "decimal_odds": dec_odds,
-            "contracts": round(contracts, 1) if has_kalshi else None,
+            "recommendation": prop["recommendation"],
+            "buy_price": round(buy_price, 4),
+            "model_prob": prop["model_prob"],
+            "edge_pct": prop["edge_pct"],
+            "kalshi_ticker": prop["kalshi_ticker"],
+            "contracts": round(contracts, 1),
             "bet_amount": bet_amount,
-            "potential_payout": potential_payout,
             "potential_profit": potential_profit,
-            "reasoning": prop["reasoning"],
             "game_time": prop["game_time"],
         })
 
-    total_wagered = round(sum(b["bet_amount"] for b in props_bet_slip), 2)
-    total_potential_profit = round(sum(b["potential_profit"] for b in props_bet_slip), 2)
-
-    # --- KALSHI-ONLY PROP EDGES ---
-    # Props where Kalshi price exists and our model disagrees significantly
-    kalshi_edges = []
-    for prop in all_props:
-        if prop.get("kalshi_price") and prop.get("kalshi_edge", 0) > 3:
-            kalshi_edges.append({
-                "player": prop["player"],
-                "player_team": prop.get("player_team", ""),
-                "prop": prop.get("kalshi_label", prop["prop"]),
-                "kalshi_price": prop["kalshi_price"],
-                "kalshi_ticker": prop.get("kalshi_ticker", ""),
-                "model_edge_pct": prop["kalshi_edge"],
-                "confidence": prop["confidence"],
-                "matchup": prop["matchup"],
-                "game_time": prop.get("game_time", ""),
-            })
-    kalshi_edges.sort(key=lambda e: e["model_edge_pct"], reverse=True)
+    total_wagered = round(sum(b["bet_amount"] for b in bet_slip_bets), 2)
+    total_potential_profit = round(sum(b["potential_profit"] for b in bet_slip_bets), 2)
 
     return {
         "date": today,
         "props": all_props,
         "total_props": len(all_props),
-        "strong_props": sum(1 for p in all_props if p["confidence_score"] >= 70),
-        "kalshi_prop_count": sum(1 for p in all_props if p.get("kalshi_price")),
-        "kalshi_edges": kalshi_edges,
+        "value_props": sum(1 for p in all_props if p["recommendation"] != "PASS"),
+        "started_games": sum(1 for p in all_props if p["started"]),
         "bet_slip": {
             "bankroll": bankroll,
-            "bets": props_bet_slip,
+            "bets": bet_slip_bets,
             "total_wagered": total_wagered,
             "remaining_bankroll": round(bankroll - total_wagered, 2),
             "total_potential_profit": total_potential_profit,
-            "num_bets": len(props_bet_slip),
+            "num_bets": len(bet_slip_bets),
         },
         "kalshi_status": get_kalshi_status(),
     }

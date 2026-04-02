@@ -377,141 +377,121 @@ function TodayGameCard({ game }) {
   )
 }
 
-/* --- PLAYER PROP CARD --- */
+/* --- KALSHI PROP CARD --- */
 function PropCard({ prop }) {
-  const typeColor = PROP_TYPE_COLOR[prop.type] || 'var(--text-muted)'
-  const typeLabel = PROP_TYPE_LABEL[prop.type] || prop.type
-  const started = isGameStarted(prop.game_time)
-  const hasKalshi = prop.kalshi_price && prop.kalshi_price > 0
-  const kalshiCents = hasKalshi ? Math.round(prop.kalshi_price * 100) : null
-  const kalshi2Cents = prop.kalshi_2plus_price ? Math.round(prop.kalshi_2plus_price * 100) : null
+  const started = prop.started
+  const edgeColor = prop.edge_pct > 5 ? '#22c55e' : prop.edge_pct > 2 ? '#f97316' : prop.edge_pct > 0 ? '#eab308' : '#ef4444'
+  const isPass = prop.recommendation === 'PASS'
+  const isBuyYes = prop.recommendation === 'BUY YES'
+  const priceCents = Math.round(prop.kalshi_price * 100)
+  const modelPct = Math.round(prop.model_prob * 100)
 
   return (
     <div style={{
       background: 'var(--bg-surface)',
-      border: `1px solid ${started ? '#ef444430' : hasKalshi ? '#3b82f640' : typeColor + '30'}`,
+      border: `1px solid ${started ? '#ef444440' : isPass ? 'var(--border)' : edgeColor + '40'}`,
       borderRadius: 10,
       padding: '14px 16px',
-      opacity: started ? 0.65 : 1,
+      opacity: started ? 0.6 : 1,
     }}>
       {started && (
         <div style={{
+          background: '#ef444410',
+          border: '1px solid #ef444430',
+          borderRadius: 6,
+          padding: '6px 12px',
+          marginBottom: 10,
           display: 'flex',
           alignItems: 'center',
-          gap: 6,
-          marginBottom: 8,
-          fontSize: 11,
+          gap: 8,
+          fontSize: 12,
           color: '#ef4444',
           fontWeight: 600,
         }}>
-          <LiveBadge /> Game started
+          <LiveBadge /> Game started &mdash; prices may have changed
         </div>
       )}
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
             <span style={{
-              background: `${typeColor}20`,
-              color: typeColor,
+              background: '#3b82f620',
+              color: '#3b82f6',
               padding: '2px 8px',
               borderRadius: 4,
               fontSize: 11,
               fontWeight: 700,
               letterSpacing: 0.5,
             }}>
-              {typeLabel}
+              {prop.prop.toUpperCase()}
             </span>
-            {hasKalshi && (
-              <span style={{
-                background: '#3b82f620',
-                color: '#3b82f6',
-                padding: '2px 6px',
-                borderRadius: 3,
-                fontSize: 9,
-                fontWeight: 700,
-                letterSpacing: 0.5,
-              }}>
-                KALSHI
-              </span>
-            )}
             <span style={{ fontSize: 15, fontWeight: 700 }}>{prop.player}</span>
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
             {prop.player_team} &middot; {prop.matchup}
-          </div>
-        </div>
-        <div style={{ textAlign: 'right' }}>
-          <span style={{ color: CONF_COLOR[prop.confidence], fontSize: 12, fontWeight: 700 }}>
-            {prop.confidence}
-          </span>
-          <div style={{
-            fontFamily: 'JetBrains Mono, monospace',
-            fontSize: 11,
-            color: 'var(--text-muted)',
-            marginTop: 2,
-          }}>
-            {prop.confidence_score}/100
-          </div>
-        </div>
-      </div>
-
-      <div style={{
-        background: `${typeColor}08`,
-        border: `1px solid ${typeColor}20`,
-        borderRadius: 8,
-        padding: '8px 12px',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-      }}>
-        <div>
-          <div style={{ fontSize: 16, fontWeight: 800, color: typeColor }}>
-            {prop.recommendation} {prop.line} {prop.type === 'home_run' ? '' : prop.type === 'pitcher_strikeouts' ? 'Ks' : prop.type.replace('_', ' ')}
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-            Projected: <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{prop.projected_value}</span>
-          </div>
-        </div>
-        {hasKalshi && (
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2 }}>KALSHI</div>
-            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 18, color: '#3b82f6' }}>
-              {kalshiCents}&cent;
-            </div>
-            {prop.kalshi_edge != null && (
-              <div style={{
-                fontSize: 11,
-                fontFamily: 'JetBrains Mono, monospace',
-                fontWeight: 600,
-                color: prop.kalshi_edge > 0 ? '#22c55e' : '#ef4444',
-                marginTop: 2,
-              }}>
-                {prop.kalshi_edge > 0 ? '+' : ''}{prop.kalshi_edge.toFixed(1)}% edge
-              </div>
+            {prop.game_time && !started && (
+              <span> &middot; {new Date(prop.game_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
             )}
+          </div>
+        </div>
+        {!isPass && (
+          <div style={{
+            background: `${edgeColor}15`,
+            color: edgeColor,
+            padding: '4px 10px',
+            borderRadius: 6,
+            fontWeight: 700,
+            fontSize: 13,
+            textAlign: 'center',
+          }}>
+            {prop.strength}
           </div>
         )}
       </div>
 
-      {/* Show 2+ hits market if available */}
-      {kalshi2Cents && (
-        <div style={{
-          marginTop: 6,
-          padding: '4px 12px',
-          background: '#3b82f608',
-          border: '1px solid #3b82f615',
-          borderRadius: 6,
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          fontSize: 12,
-        }}>
-          <span style={{ color: 'var(--text-muted)' }}>2+ hits contract</span>
-          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, color: '#3b82f6' }}>
-            {kalshi2Cents}&cent;
-          </span>
+      {/* Price comparison bar */}
+      <div style={{
+        background: isPass ? 'var(--bg-surface)' : `${isBuyYes ? '#22c55e' : '#ef4444'}08`,
+        border: `1px solid ${isPass ? 'var(--border)' : (isBuyYes ? '#22c55e' : '#ef4444') + '20'}`,
+        borderRadius: 8,
+        padding: '10px 14px',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: isPass ? 'var(--text-muted)' : isBuyYes ? '#22c55e' : '#ef4444' }}>
+            {prop.recommendation}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            .{String(Math.round(prop.matchup_avg * 1000)).padStart(3, '0')} matchup AVG
+          </div>
         </div>
-      )}
+
+        <div style={{ display: 'flex', gap: 16 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2, textTransform: 'uppercase' }}>Kalshi</div>
+            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 20, color: '#3b82f6' }}>
+              {priceCents}&cent;
+            </div>
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2, textTransform: 'uppercase' }}>Model</div>
+            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 20 }}>
+              {modelPct}%
+            </div>
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2, textTransform: 'uppercase' }}>Edge</div>
+            <div style={{
+              fontFamily: 'JetBrains Mono, monospace',
+              fontWeight: 700,
+              fontSize: 20,
+              color: edgeColor,
+            }}>
+              {prop.edge_pct > 0 ? '+' : ''}{prop.edge_pct}%
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 8, lineHeight: 1.5 }}>
         {prop.reasoning}
@@ -582,7 +562,8 @@ export default function EdgePage() {
   const [propsData, setPropsData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [propsFilter, setPropsFilter] = useState('all')
+  const [propsFilter, setPropsFilter] = useState('all') // 'all', 'edges', 'started'
+  const [propsHitLine, setPropsHitLine] = useState(0) // 0=all, 1=1+, 2=2+, 3=3+
 
   useEffect(() => {
     async function load() {
@@ -607,9 +588,12 @@ export default function EdgePage() {
     load()
   }, [tab])
 
-  const filteredProps = propsData?.props?.filter(p =>
-    propsFilter === 'all' || p.type === propsFilter
-  ) || []
+  const filteredProps = (propsData?.props || []).filter(p => {
+    if (propsFilter === 'edges' && p.recommendation === 'PASS') return false
+    if (propsFilter === 'started' && !p.started) return false
+    if (propsHitLine > 0 && p.hit_line !== propsHitLine) return false
+    return true
+  })
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '24px 16px' }}>
@@ -721,11 +705,11 @@ export default function EdgePage() {
       {/* PROPS TAB */}
       {!loading && !error && tab === 'props' && propsData && (
         <>
-          {/* Kalshi Prop Edges */}
-          {propsData.kalshi_edges && propsData.kalshi_edges.length > 0 && (
+          {/* Bet Slip */}
+          {propsData.bet_slip && propsData.bet_slip.bets.length > 0 && (
             <div style={{
               background: 'linear-gradient(135deg, rgba(59,130,246,0.06), rgba(34,197,94,0.06))',
-              border: '2px solid #3b82f630',
+              border: '2px solid #22c55e30',
               borderRadius: 14,
               padding: 20,
               marginBottom: 24,
@@ -733,7 +717,7 @@ export default function EdgePage() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                 <div>
                   <div style={{ fontSize: 18, fontWeight: 800 }}>
-                    <span style={{ marginRight: 8 }}>Kalshi Prop Edges</span>
+                    <span style={{ marginRight: 8 }}>Kalshi Props Slip</span>
                     <span style={{
                       background: '#3b82f620',
                       color: '#3b82f6',
@@ -746,19 +730,19 @@ export default function EdgePage() {
                     }}>PREDICTION MARKET</span>
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                    Props where our model disagrees with Kalshi consumer prices &mdash; less volume = more edge
+                    $100 bankroll &middot; Kelly-sized &middot; {propsData.bet_slip.num_bets} contract{propsData.bet_slip.num_bets !== 1 ? 's' : ''}
                   </div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>EDGES FOUND</div>
-                  <div style={{ fontSize: 20, fontWeight: 800, fontFamily: 'JetBrains Mono, monospace', color: '#22c55e' }}>
-                    {propsData.kalshi_edges.length}
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>TOTAL INVESTED</div>
+                  <div style={{ fontSize: 20, fontWeight: 800, fontFamily: 'JetBrains Mono, monospace', color: 'var(--accent)' }}>
+                    ${propsData.bet_slip.total_wagered.toFixed(2)}
                   </div>
                 </div>
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {propsData.kalshi_edges.map((edge, i) => (
+                {propsData.bet_slip.bets.map((bet, i) => (
                   <div key={i} style={{
                     background: 'var(--bg-surface)',
                     border: '1px solid #3b82f625',
@@ -770,33 +754,34 @@ export default function EdgePage() {
                     gap: 10,
                     flexWrap: 'wrap',
                   }}>
-                    <div style={{ flex: '1 1 220px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <span style={{
-                          background: '#3b82f620',
-                          color: '#3b82f6',
-                          padding: '1px 6px',
-                          borderRadius: 3,
-                          fontSize: 10,
-                          fontWeight: 700,
-                        }}>KALSHI</span>
-                        <span style={{ fontWeight: 700, fontSize: 14 }}>{edge.player}</span>
+                    <div style={{ flex: '1 1 200px' }}>
+                      <div style={{ fontWeight: 700, fontSize: 14 }}>
+                        <span style={{ color: bet.recommendation === 'BUY YES' ? '#22c55e' : '#ef4444' }}>
+                          {bet.recommendation}
+                        </span>
+                        <span style={{ marginLeft: 6 }}>{bet.player}</span>
                       </div>
                       <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                        {edge.prop} &middot; {edge.matchup}
+                        {bet.prop} &middot; {bet.matchup}
                       </div>
                     </div>
-                    <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <div style={{ textAlign: 'center', minWidth: 55 }}>
+                    <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <div style={{ textAlign: 'center', minWidth: 50 }}>
                         <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>PRICE</div>
-                        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 16, color: '#3b82f6' }}>
-                          {Math.round(edge.kalshi_price * 100)}&cent;
+                        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 15, color: '#3b82f6' }}>
+                          {Math.round(bet.buy_price * 100)}&cent;
                         </div>
                       </div>
-                      <div style={{ textAlign: 'center', minWidth: 55 }}>
+                      <div style={{ textAlign: 'center', minWidth: 50 }}>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>MODEL</div>
+                        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13 }}>
+                          {Math.round(bet.model_prob * 100)}%
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'center', minWidth: 45 }}>
                         <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>EDGE</div>
-                        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 14, color: '#22c55e' }}>
-                          +{edge.model_edge_pct.toFixed(1)}%
+                        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13, color: '#22c55e' }}>
+                          {bet.edge_pct > 0 ? '+' : ''}{bet.edge_pct}%
                         </div>
                       </div>
                       <div style={{
@@ -806,149 +791,20 @@ export default function EdgePage() {
                         borderRadius: 8,
                         padding: '4px 10px',
                       }}>
-                        <div style={{ fontSize: 10, color: '#22c55e', fontWeight: 700 }}>BUY YES</div>
-                        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 12, color: '#22c55e' }}>
-                          {Math.round(edge.kalshi_price * 100)}&cent;
+                        <div style={{ fontSize: 10, color: '#22c55e', fontWeight: 700 }}>INVEST</div>
+                        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 800, fontSize: 15, color: '#22c55e' }}>
+                          ${bet.bet_amount.toFixed(2)}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'center', minWidth: 50 }}>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>PROFIT</div>
+                        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 13, color: 'var(--accent)' }}>
+                          +${bet.potential_profit.toFixed(2)}
                         </div>
                       </div>
                     </div>
                   </div>
                 ))}
-              </div>
-            </div>
-          )}
-
-          {propsData.bet_slip && propsData.bet_slip.bets.length > 0 && (
-            <div style={{
-              background: 'linear-gradient(135deg, rgba(168,85,247,0.06), rgba(59,130,246,0.06))',
-              border: '2px solid #a855f730',
-              borderRadius: 14,
-              padding: 20,
-              marginBottom: 24,
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                <div>
-                  <div style={{ fontSize: 18, fontWeight: 800 }}>Props Bet Slip</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                    $100 bankroll &middot; {propsData.bet_slip.num_bets} prop{propsData.bet_slip.num_bets !== 1 ? 's' : ''} &middot; confidence-weighted
-                    {propsData.kalshi_prop_count > 0 && (
-                      <span style={{ color: '#3b82f6' }}> &middot; {propsData.kalshi_prop_count} with Kalshi prices</span>
-                    )}
-                  </div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>TOTAL INVESTED</div>
-                  <div style={{ fontSize: 20, fontWeight: 800, fontFamily: 'JetBrains Mono, monospace', color: '#a855f7' }}>
-                    ${propsData.bet_slip.total_wagered.toFixed(2)}
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {propsData.bet_slip.bets.map((bet, i) => {
-                  const typeColor = PROP_TYPE_COLOR[bet.type] || 'var(--text-muted)'
-                  const typeLabel = PROP_TYPE_LABEL[bet.type] || bet.type
-                  const hasKalshi = bet.has_kalshi
-                  const priceCents = hasKalshi ? Math.round(bet.kalshi_price * 100) : null
-                  return (
-                    <div key={i} style={{
-                      background: 'var(--bg-surface)',
-                      border: `1px solid ${hasKalshi ? '#3b82f625' : 'var(--border)'}`,
-                      borderRadius: 10,
-                      padding: '10px 14px',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      gap: 10,
-                      flexWrap: 'wrap',
-                    }}>
-                      <div style={{ flex: '1 1 220px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span style={{
-                            background: `${typeColor}20`,
-                            color: typeColor,
-                            padding: '1px 6px',
-                            borderRadius: 3,
-                            fontSize: 10,
-                            fontWeight: 700,
-                          }}>{typeLabel}</span>
-                          {hasKalshi && (
-                            <span style={{
-                              background: '#3b82f620',
-                              color: '#3b82f6',
-                              padding: '1px 5px',
-                              borderRadius: 3,
-                              fontSize: 9,
-                              fontWeight: 700,
-                            }}>KALSHI</span>
-                          )}
-                          <span style={{ fontWeight: 700, fontSize: 14 }}>{bet.player}</span>
-                        </div>
-                        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-                          {bet.prop} &middot; {bet.matchup}
-                        </div>
-                      </div>
-                      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                        <div style={{ textAlign: 'center', minWidth: 45 }}>
-                          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>PROJ</div>
-                          <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13 }}>
-                            {bet.projected_value}
-                          </div>
-                        </div>
-                        <div style={{ textAlign: 'center', minWidth: 50 }}>
-                          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{hasKalshi ? 'PRICE' : 'ODDS'}</div>
-                          {hasKalshi ? (
-                            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 15, color: '#3b82f6' }}>
-                              {priceCents}&cent;
-                            </div>
-                          ) : (
-                            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13, color: 'var(--text-secondary)' }}>
-                              ~{bet.decimal_odds}x
-                            </div>
-                          )}
-                        </div>
-                        {bet.kalshi_edge != null && (
-                          <div style={{ textAlign: 'center', minWidth: 45 }}>
-                            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>EDGE</div>
-                            <div style={{
-                              fontFamily: 'JetBrains Mono, monospace',
-                              fontWeight: 600,
-                              fontSize: 12,
-                              color: bet.kalshi_edge > 0 ? '#22c55e' : '#ef4444',
-                            }}>
-                              {bet.kalshi_edge > 0 ? '+' : ''}{bet.kalshi_edge.toFixed(0)}%
-                            </div>
-                          </div>
-                        )}
-                        <div style={{
-                          textAlign: 'center',
-                          minWidth: 60,
-                          background: hasKalshi ? '#22c55e15' : '#a855f715',
-                          borderRadius: 8,
-                          padding: '4px 10px',
-                        }}>
-                          <div style={{ fontSize: 10, color: hasKalshi ? '#22c55e' : '#a855f7', fontWeight: 700 }}>
-                            {hasKalshi ? 'BUY' : 'BET'}
-                          </div>
-                          <div style={{
-                            fontFamily: 'JetBrains Mono, monospace',
-                            fontWeight: 800,
-                            fontSize: 15,
-                            color: hasKalshi ? '#22c55e' : '#a855f7',
-                          }}>
-                            ${bet.bet_amount.toFixed(2)}
-                          </div>
-                        </div>
-                        <div style={{ textAlign: 'center', minWidth: 50 }}>
-                          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>PROFIT</div>
-                          <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 13, color: '#22c55e' }}>
-                            +${bet.potential_profit.toFixed(2)}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
               </div>
 
               <div style={{
@@ -977,56 +833,34 @@ export default function EdgePage() {
             </div>
           )}
 
+          {/* Stats */}
           <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
-            <div style={{
-              background: 'var(--bg-surface)',
-              border: '1px solid var(--border)',
-              borderRadius: 8,
-              padding: '10px 16px',
-              fontSize: 13,
-            }}>
-              <span style={{ color: 'var(--text-muted)' }}>Total Props: </span>
-              <span style={{ fontWeight: 700, fontFamily: 'JetBrains Mono, monospace' }}>
-                {propsData.total_props}
-              </span>
-            </div>
-            <div style={{
-              background: 'var(--bg-surface)',
-              border: '1px solid #22c55e30',
-              borderRadius: 8,
-              padding: '10px 16px',
-              fontSize: 13,
-            }}>
-              <span style={{ color: 'var(--text-muted)' }}>Strong: </span>
-              <span style={{ fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', color: '#22c55e' }}>
-                {propsData.strong_props}
-              </span>
-            </div>
-            {propsData.kalshi_prop_count > 0 && (
-              <div style={{
+            {[
+              { label: 'Total Props', value: propsData.total_props },
+              { label: 'Value Picks', value: propsData.value_props, color: '#22c55e' },
+              { label: 'Games Started', value: propsData.started_games, color: '#ef4444' },
+            ].map((s, i) => (
+              <div key={i} style={{
                 background: 'var(--bg-surface)',
-                border: '1px solid #3b82f630',
+                border: `1px solid ${s.color ? s.color + '30' : 'var(--border)'}`,
                 borderRadius: 8,
                 padding: '10px 16px',
                 fontSize: 13,
               }}>
-                <span style={{ color: 'var(--text-muted)' }}>Kalshi Prices: </span>
-                <span style={{ fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', color: '#3b82f6' }}>
-                  {propsData.kalshi_prop_count}
+                <span style={{ color: 'var(--text-muted)' }}>{s.label}: </span>
+                <span style={{ fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', color: s.color || 'var(--text-primary)' }}>
+                  {s.value}
                 </span>
               </div>
-            )}
+            ))}
           </div>
 
           {/* Filter buttons */}
-          <div style={{ display: 'flex', gap: 4, marginBottom: 16, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
             {[
-              { key: 'all', label: 'All' },
-              { key: 'pitcher_strikeouts', label: 'Pitcher Ks', color: PROP_TYPE_COLOR.pitcher_strikeouts },
-              { key: 'strikeout', label: 'Batter Ks', color: PROP_TYPE_COLOR.strikeout },
-              { key: 'hits', label: 'Hits', color: PROP_TYPE_COLOR.hits },
-              { key: 'home_run', label: 'Home Runs', color: PROP_TYPE_COLOR.home_run },
-              { key: 'total_bases', label: 'Total Bases', color: PROP_TYPE_COLOR.total_bases },
+              { key: 'all', label: 'All Props' },
+              { key: 'edges', label: 'Edges Only', color: '#22c55e' },
+              { key: 'started', label: 'Started Games', color: '#ef4444' },
             ].map(f => (
               <button
                 key={f.key}
@@ -1046,6 +880,31 @@ export default function EdgePage() {
               </button>
             ))}
           </div>
+          <div style={{ display: 'flex', gap: 4, marginBottom: 16, flexWrap: 'wrap' }}>
+            {[
+              { key: 0, label: 'All Lines' },
+              { key: 1, label: '1+ Hits' },
+              { key: 2, label: '2+ Hits' },
+              { key: 3, label: '3+ Hits' },
+            ].map(f => (
+              <button
+                key={f.key}
+                onClick={() => setPropsHitLine(f.key)}
+                style={{
+                  padding: '5px 12px',
+                  borderRadius: 6,
+                  fontSize: 11,
+                  fontWeight: propsHitLine === f.key ? 700 : 400,
+                  color: propsHitLine === f.key ? '#3b82f6' : 'var(--text-secondary)',
+                  background: propsHitLine === f.key ? '#3b82f615' : 'transparent',
+                  border: `1px solid ${propsHitLine === f.key ? '#3b82f650' : 'var(--border)'}`,
+                  cursor: 'pointer',
+                }}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 12 }}>
             {filteredProps.map((prop, i) => (
@@ -1055,7 +914,7 @@ export default function EdgePage() {
 
           {filteredProps.length === 0 && (
             <div style={{ textAlign: 'center', padding: 48, color: 'var(--text-muted)' }}>
-              {propsData.message || 'No player props available for today\'s games.'}
+              {propsData.message || 'No Kalshi prop markets found for today.'}
             </div>
           )}
         </>
