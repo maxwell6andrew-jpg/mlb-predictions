@@ -111,15 +111,27 @@ def _load_private_key():
 
         # Option 1: Raw PEM content in env var (for Render / cloud deploys)
         if KALSHI_PRIVATE_KEY_PEM:
-            pem_str = KALSHI_PRIVATE_KEY_PEM
-            # Render may mangle newlines — fix common issues
-            if "\\n" in pem_str and "\n" not in pem_str.replace("\\n", ""):
+            pem_str = KALSHI_PRIVATE_KEY_PEM.strip()
+
+            # Render mangles newlines in env vars. Handle all formats:
+            # Format A: literal \n characters (most common Render issue)
+            if "\\n" in pem_str:
                 pem_str = pem_str.replace("\\n", "\n")
-            # Ensure proper PEM formatting
-            if "-----BEGIN" in pem_str and "\n" not in pem_str[10:30]:
-                # All on one line — reconstruct with newlines
-                pem_str = pem_str.replace("-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----\n")
-                pem_str = pem_str.replace("-----END RSA PRIVATE KEY-----", "\n-----END RSA PRIVATE KEY-----")
+
+            # Format B: Everything on one line, no newlines at all
+            # e.g. "-----BEGIN RSA PRIVATE KEY-----MIIEpAI...-----END RSA PRIVATE KEY-----"
+            if "\n" not in pem_str and "-----BEGIN" in pem_str:
+                # Extract the base64 content between BEGIN and END markers
+                import re
+                m = re.match(r'(-----BEGIN [A-Z ]+-----)(.+)(-----END [A-Z ]+-----)', pem_str)
+                if m:
+                    header = m.group(1)
+                    b64 = m.group(2)
+                    footer = m.group(3)
+                    # Wrap base64 at 64 chars per line (PEM standard)
+                    wrapped = "\n".join(b64[i:i+64] for i in range(0, len(b64), 64))
+                    pem_str = f"{header}\n{wrapped}\n{footer}"
+
             pem_data = pem_str.strip().encode()
             print(f"  Kalshi: Loading key from env var ({len(pem_data)} bytes)")
             return serialization.load_pem_private_key(pem_data, password=None)
