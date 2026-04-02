@@ -174,8 +174,8 @@ function BetSlip({ slip }) {
                 {started && <span style={{ marginLeft: 8 }}><LiveBadge /></span>}
               </div>
               <div style={{ fontSize: 12, color: started ? '#ef4444' : 'var(--text-muted)', marginTop: 2 }}>
-                {bet.matchup} &middot;{' '}
-                {new Date(bet.game_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                {bet.matchup}
+                {bet.game_time && <> &middot; {new Date(bet.game_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</>}
                 {started && ' (started)'}
               </div>
             </div>
@@ -291,7 +291,7 @@ function TodayGameCard({ game }) {
             {game.away_team} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>@</span> {game.home_team}
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-            {new Date(game.game_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+            {game.game_time ? new Date(game.game_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'TBD'}
             {started && <span style={{ color: '#ef4444' }}> (started)</span>}
             {game.kalshi_volume > 0 && <span> &middot; Vol: {game.kalshi_volume}</span>}
           </div>

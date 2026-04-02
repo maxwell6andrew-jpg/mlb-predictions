@@ -158,29 +158,11 @@ async def edge_today(request: Request):
             "kalshi_status": get_kalshi_status(),
         }
 
-    # Also fetch today's schedule for game times
-    api_client = getattr(request.app.state, "api_client", None)
     pacific = timezone(timedelta(hours=-7))
     today = datetime.now(pacific).strftime("%Y-%m-%d")
 
-    schedule_games = []
-    if api_client:
-        try:
-            data = await api_client._get(
-                "/schedule",
-                params={"sportId": 1, "date": today, "hydrate": "team,linescore"},
-                cache_ttl=300,
-            )
-            dates = data.get("dates", [])
-            schedule_games = dates[0]["games"] if dates else []
-        except Exception:
-            pass
-
-    # Build game time lookup
-    game_times = {}
-    for g in schedule_games:
-        home = g["teams"]["home"]["team"]["name"]
-        game_times[home] = g.get("gameDate", "")
+    # Filter to only today's games (Kalshi may return tomorrow's too from cache)
+    kalshi_games = [g for g in kalshi_games if g.get("game_date", "") == today]
 
     value_games = []
 
@@ -226,8 +208,8 @@ async def edge_today(request: Request):
         home_kelly = _kelly(model_home, home_dec_odds)
         away_kelly = _kelly(model_away, away_dec_odds)
 
-        # Get game time from schedule
-        game_time = game_times.get(home_name, "")
+        # Get game time from Kalshi event data
+        game_time = game.get("game_time_iso", "")
 
         # Which side has value?
         if home_ev > away_ev and home_ev > 0:
