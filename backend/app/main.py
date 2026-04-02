@@ -626,13 +626,16 @@ async def lifespan(app: FastAPI):
     app.state.batter_statcast = {}
     app.state.pitcher_statcast = {}
 
-    print("=" * 60)
-    print("MLB Predictor — server starting (data loads in background)...")
-    print("=" * 60)
+    import sys
+    print("=" * 60, flush=True)
+    print("MLB Predictor — server starting (data loads in background)...", flush=True)
+    print(f"Python {sys.version}", flush=True)
+    print("=" * 60, flush=True)
 
     # Launch heavy init as a background task — server binds the port NOW
     init_task = asyncio.create_task(_background_init(app))
 
+    print("Yielding to allow port binding...", flush=True)
     yield
 
     # Cleanup
