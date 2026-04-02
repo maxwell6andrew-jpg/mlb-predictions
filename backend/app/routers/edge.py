@@ -849,9 +849,31 @@ async def kalshi_status(request: Request):
 @limiter.limit("10/minute")
 async def kalshi_debug_view(request: Request):
     """Debug: show raw Kalshi markets for troubleshooting."""
+    import os
+    from app.data.kalshi_client import _load_private_key
+
+    # Key diagnostics (no secrets exposed)
+    pem_env = os.environ.get("KALSHI_PRIVATE_KEY_PEM", "")
+    api_key = os.environ.get("KALSHI_API_KEY", "")
+    key_path = os.environ.get("KALSHI_PRIVATE_KEY_PATH", "")
+    pk = _load_private_key()
+
+    key_diag = {
+        "api_key_set": bool(api_key),
+        "api_key_prefix": api_key[:8] + "..." if api_key else "",
+        "pem_env_length": len(pem_env),
+        "pem_env_has_begin": "-----BEGIN" in pem_env if pem_env else False,
+        "pem_env_has_literal_backslash_n": "\\n" in pem_env if pem_env else False,
+        "pem_env_has_real_newlines": "\n" in pem_env if pem_env else False,
+        "pem_env_first_40": pem_env[:40] if pem_env else "",
+        "key_path": key_path or "(not set)",
+        "private_key_loaded": pk is not None,
+    }
+
     markets = await fetch_mlb_markets()
     return {
         "kalshi_status": get_kalshi_status(),
+        "key_diagnostics": key_diag,
         "num_markets": len(markets),
         "markets": markets[:20],
     }
