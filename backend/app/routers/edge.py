@@ -1,10 +1,11 @@
 """
 /api/edge/season — Model vs Vegas season win totals with value identification
-/api/edge/today  — Today's games with REAL odds from DraftKings/FanDuel/etc
+/api/edge/today  — Today's games with Kalshi contract prices (prediction market)
 /api/edge/props  — Player prop recommendations based on pitcher/batter matchups
 
 PRIVATE ENDPOINTS — not linked from public frontend.
-Requires ODDS_API_KEY environment variable for live odds.
+Kalshi API: contract price = implied probability. $0.55 YES = 55% chance.
+Edge = our model probability - Kalshi implied probability.
 """
 
 from fastapi import APIRouter, Request, Query
@@ -16,7 +17,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from app.data.vegas_lines import get_vegas_line
-from app.data.odds_client import fetch_live_odds, match_odds_to_team_name, get_remaining_requests
+from app.data.kalshi_client import fetch_mlb_markets, match_kalshi_team, get_kalshi_status
 from app.data.park_factors import get_park_factor
 
 limiter = Limiter(key_func=get_remote_address)
@@ -133,9 +134,10 @@ async def edge_season(request: Request):
 @limiter.limit("10/minute")
 async def edge_today(request: Request):
     """
-    Today's games with REAL live odds.
-    Compares model win probability to actual sportsbook lines.
-    Calculates true EV and Kelly sizing using real moneylines.
+    Today's games with Kalshi contract prices.
+    Compares model win probability to Kalshi market implied probability.
+    Contract at $0.55 = market thinks 55% chance.
+    Edge = model prob - contract price. Positive edge = buy YES.
     """
     cache = request.app.state.projection_cache
     standings = getattr(request.app.state, "standings_cache", [])
@@ -145,67 +147,133 @@ async def edge_today(request: Request):
     for team in standings:
         team_by_name[team["name"]] = team
 
-    # Fetch real live odds
-    live_odds = await fetch_live_odds()
+    # Fetch Kalshi MLB markets
+    kalshi_markets = await fetch_mlb_markets()
 
-    if not live_odds:
+    if not kalshi_markets:
         return {
             "date": datetime.now(timezone(timedelta(hours=-7))).strftime("%Y-%m-%d"),
             "games": [],
-            "message": "No live odds available. Check ODDS_API_KEY env var.",
-            "quota": get_remaining_requests(),
+            "message": "No Kalshi markets available. Check KALSHI_API_KEY and KALSHI_PRIVATE_KEY_PATH env vars.",
+            "kalshi_status": get_kalshi_status(),
         }
 
+    # Try to match Kalshi markets to our model's games
+    # Also fetch today's schedule for game times
+    api_client = getattr(request.app.state, "api_client", None)
+    pacific = timezone(timedelta(hours=-7))
+    today = datetime.now(pacific).strftime("%Y-%m-%d")
+
+    schedule_games = []
+    if api_client:
+        try:
+            data = await api_client._get(
+                "/schedule",
+                params={"sportId": 1, "date": today, "hydrate": "team,linescore"},
+                cache_ttl=300,
+            )
+            dates = data.get("dates", [])
+            schedule_games = dates[0]["games"] if dates else []
+        except Exception:
+            pass
+
+    # Build schedule lookup: team_name → game info
+    schedule_by_team = {}
+    for g in schedule_games:
+        home_name = g["teams"]["home"]["team"]["name"]
+        away_name = g["teams"]["away"]["team"]["name"]
+        game_time = g.get("gameDate", "")
+        schedule_by_team[home_name] = {"opponent": away_name, "side": "HOME", "game_time": game_time}
+        schedule_by_team[away_name] = {"opponent": home_name, "side": "AWAY", "game_time": game_time}
+
     value_games = []
+    seen_matchups = set()  # Avoid duplicate matchups
 
-    for game in live_odds:
-        home_name_odds = game["home_team"]
-        away_name_odds = game["away_team"]
+    for market in kalshi_markets:
+        title = market["title"]
+        yes_price = market["yes_price"]
+        no_price = market["no_price"]
+        yes_bid = market["yes_bid"]
+        no_bid = market["no_bid"]
 
-        # Map to our team names
-        home_name = match_odds_to_team_name(home_name_odds)
-        away_name = match_odds_to_team_name(away_name_odds)
-
-        # Find our model projections
-        home_data = team_by_name.get(home_name)
-        away_data = team_by_name.get(away_name)
-
-        if not home_data or not away_data:
+        if not yes_price or yes_price <= 0:
             continue
 
-        home_proj = cache.get_team(home_data["team_id"])
-        away_proj = cache.get_team(away_data["team_id"])
-        if not home_proj or not away_proj:
+        # Extract team from Kalshi market title
+        team_name = match_kalshi_team(title)
+        if not team_name:
             continue
+
+        # Find our model data
+        team_data = team_by_name.get(team_name)
+        if not team_data:
+            continue
+
+        team_proj = cache.get_team(team_data["team_id"])
+        if not team_proj:
+            continue
+
+        # Find the opponent from the schedule
+        sched = schedule_by_team.get(team_name)
+        if not sched:
+            continue
+
+        opponent_name = sched["opponent"]
+        side = sched["side"]
+        game_time = sched["game_time"]
+
+        opponent_data = team_by_name.get(opponent_name)
+        if not opponent_data:
+            continue
+        opponent_proj = cache.get_team(opponent_data["team_id"])
+        if not opponent_proj:
+            continue
+
+        # Avoid processing the same matchup twice
+        matchup_key = tuple(sorted([team_name, opponent_name]))
+        if matchup_key in seen_matchups:
+            continue
+        seen_matchups.add(matchup_key)
 
         # Model win probability (log5 + home field)
-        home_wpct = home_proj.get("win_pct", 0.5)
-        away_wpct = away_proj.get("win_pct", 0.5)
+        if side == "HOME":
+            home_name, away_name = team_name, opponent_name
+            home_wpct = team_proj.get("win_pct", 0.5)
+            away_wpct = opponent_proj.get("win_pct", 0.5)
+        else:
+            home_name, away_name = opponent_name, team_name
+            home_wpct = opponent_proj.get("win_pct", 0.5)
+            away_wpct = team_proj.get("win_pct", 0.5)
+
         denom = home_wpct * (1 - away_wpct) + away_wpct * (1 - home_wpct)
         model_home = (home_wpct * (1 - away_wpct)) / denom if denom > 0 else 0.5
         model_home = min(0.95, max(0.05, model_home + 0.035))  # home field
         model_away = 1 - model_home
 
-        # Real odds from sportsbooks
-        best_home_ml = game["best_home_ml"]
-        best_away_ml = game["best_away_ml"]
-        consensus_home_ml = game["consensus_home_ml"]
-        consensus_away_ml = game["consensus_away_ml"]
+        # Kalshi implied probability = contract price
+        # The market title mentions a specific team — yes_price = probability that team wins
+        kalshi_team_prob = yes_price  # contract price IS the implied probability
+        if side == "HOME":
+            kalshi_home = kalshi_team_prob
+            kalshi_away = 1 - kalshi_team_prob
+        else:
+            kalshi_away = kalshi_team_prob
+            kalshi_home = 1 - kalshi_team_prob
 
-        # Vegas implied probability (no-vig)
-        vegas_home, vegas_away = _no_vig_prob(consensus_home_ml, consensus_away_ml)
+        # Edge = model prob - Kalshi implied prob
+        home_edge = model_home - kalshi_home
+        away_edge = model_away - kalshi_away
 
-        # Edge = model prob - vegas implied prob
-        home_edge = model_home - vegas_home
-        away_edge = model_away - vegas_away
+        # For Kalshi: decimal odds = 1 / contract_price
+        # Buy YES at $0.55 → pays $1.00 → decimal odds = 1/0.55 = 1.818
+        home_dec_odds = 1 / kalshi_home if kalshi_home > 0 else 1
+        away_dec_odds = 1 / kalshi_away if kalshi_away > 0 else 1
 
-        # EV using BEST available odds (line shop)
-        home_ev = _ev(model_home, _decimal_odds(best_home_ml))
-        away_ev = _ev(model_away, _decimal_odds(best_away_ml))
-
-        # Kelly sizing using best odds
-        home_kelly = _kelly(model_home, _decimal_odds(best_home_ml))
-        away_kelly = _kelly(model_away, _decimal_odds(best_away_ml))
+        # EV and Kelly
+        home_ev = _ev(model_home, home_dec_odds)
+        away_ev = _ev(model_away, away_dec_odds)
+        home_kelly = _kelly(model_home, home_dec_odds)
+        away_kelly = _kelly(model_away, away_dec_odds)
 
         # Which side has value?
         if home_ev > away_ev and home_ev > 0:
@@ -214,30 +282,24 @@ async def edge_today(request: Request):
             value_ev = home_ev
             value_kelly = home_kelly
             value_edge = home_edge
-            value_ml = best_home_ml
-            value_book = game["best_home_book"]
+            value_price = kalshi_home  # Buy YES on home at this price
             model_prob = model_home
-            vegas_prob = vegas_home
         elif away_ev > 0:
             value_side = "AWAY"
             value_team = away_name
             value_ev = away_ev
             value_kelly = away_kelly
             value_edge = away_edge
-            value_ml = best_away_ml
-            value_book = game["best_away_book"]
+            value_price = kalshi_away  # Buy YES on away at this price
             model_prob = model_away
-            vegas_prob = vegas_away
         else:
             value_side = "PASS"
             value_team = ""
             value_ev = max(home_ev, away_ev)
             value_kelly = 0
             value_edge = 0
-            value_ml = 0
-            value_book = ""
+            value_price = 0
             model_prob = 0
-            vegas_prob = 0
 
         # Edge strength
         if value_ev > 5:
@@ -252,35 +314,23 @@ async def edge_today(request: Request):
         value_games.append({
             "home_team": home_name,
             "away_team": away_name,
-            "game_time": game["commence_time"],
-            "game_total": game["game_total"],
+            "game_time": game_time,
             # Model
             "model_home_prob": round(model_home, 3),
             "model_away_prob": round(model_away, 3),
-            "model_home_ml": _moneyline_from_prob(model_home),
-            "model_away_ml": _moneyline_from_prob(model_away),
-            # Real Vegas odds
-            "vegas_home_ml": consensus_home_ml,
-            "vegas_away_ml": consensus_away_ml,
-            "vegas_home_prob": round(vegas_home, 3),
-            "vegas_away_prob": round(vegas_away, 3),
-            # Best available line (line shopping)
-            "best_home_ml": best_home_ml,
-            "best_home_book": game["best_home_book"],
-            "best_away_ml": best_away_ml,
-            "best_away_book": game["best_away_book"],
+            # Kalshi market prices (= implied probabilities)
+            "kalshi_home_price": round(kalshi_home, 3),
+            "kalshi_away_price": round(kalshi_away, 3),
+            "kalshi_ticker": market["ticker"],
+            "kalshi_volume": market["volume"],
             # Edge analysis
             "value_side": value_side,
             "value_team": value_team,
+            "value_price": round(value_price, 3),  # Buy YES at this price
             "edge_pct": round(value_edge * 100, 2),
             "ev_per_100": round(value_ev, 2),
             "kelly_pct": round(value_kelly * 100, 2),
-            "kelly_bet_on_100": round(value_kelly * 100, 2),  # $ to bet if bankroll = $100
-            "best_book": value_book,
             "strength": strength,
-            # All books for this game
-            "all_odds": game["odds"],
-            "num_books": game["num_books"],
         })
 
     # Best bets first
@@ -295,25 +345,26 @@ async def edge_today(request: Request):
             continue
         bet_amount = round(g["kelly_pct"] / 100 * bankroll, 2)
         if bet_amount < 1.0:
-            continue  # Skip tiny bets
+            continue
         if bet_amount > remaining_bankroll:
             bet_amount = round(remaining_bankroll, 2)
         if bet_amount <= 0:
             break
         remaining_bankroll -= bet_amount
 
-        # Calculate potential payout
-        value_ml = g["best_home_ml"] if g["value_side"] == "HOME" else g["best_away_ml"]
-        dec_odds = _decimal_odds(value_ml)
-        potential_payout = round(bet_amount * dec_odds, 2)
+        # Kalshi payout: buy YES contracts at value_price, each pays $1 if correct
+        # Number of contracts = bet_amount / value_price
+        # Profit per contract = (1 - value_price)
+        contracts = bet_amount / g["value_price"] if g["value_price"] > 0 else 0
+        potential_payout = round(contracts * 1.0, 2)  # Each contract pays $1
         potential_profit = round(potential_payout - bet_amount, 2)
 
         bet_slip.append({
             "team": g["value_team"],
             "opponent": g["away_team"] if g["value_side"] == "HOME" else g["home_team"],
             "side": g["value_side"],
-            "moneyline": value_ml,
-            "book": g["best_book"],
+            "buy_price": g["value_price"],  # Kalshi contract price
+            "contracts": round(contracts, 1),
             "bet_amount": bet_amount,
             "potential_payout": potential_payout,
             "potential_profit": potential_profit,
@@ -341,7 +392,7 @@ async def edge_today(request: Request):
             "total_potential_profit": total_potential_profit,
             "num_bets": len(bet_slip),
         },
-        "quota": get_remaining_requests(),
+        "kalshi_status": get_kalshi_status(),
         "disclaimer": "For research/entertainment only. Not gambling advice.",
     }
 
@@ -746,8 +797,8 @@ def _generate_pitcher_k_prop(pitcher, pitcher_name, pitcher_team, opp_team,
     }
 
 
-@router.get("/quota")
+@router.get("/status")
 @limiter.limit("30/minute")
-async def odds_quota(request: Request):
-    """Check remaining Odds API requests."""
-    return {"quota": get_remaining_requests()}
+async def kalshi_status(request: Request):
+    """Check Kalshi market cache status."""
+    return {"kalshi_status": get_kalshi_status()}

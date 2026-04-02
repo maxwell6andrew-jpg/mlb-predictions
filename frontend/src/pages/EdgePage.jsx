@@ -71,13 +71,14 @@ function LiveBadge() {
   )
 }
 
-function MoneylineTag({ ml, book }) {
-  if (!ml) return null
-  const color = ml > 0 ? '#22c55e' : '#ef4444'
+function ContractPrice({ price, label }) {
+  if (!price) return null
+  const cents = Math.round(price * 100)
+  const color = '#22c55e'
   return (
-    <span style={{ fontFamily: 'JetBrains Mono, monospace', color, fontWeight: 600 }}>
-      {ml > 0 ? '+' : ''}{ml}
-      {book && <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 11, marginLeft: 4 }}>{book}</span>}
+    <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
+      <span style={{ color, fontSize: 15 }}>{cents}&cent;</span>
+      {label && <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 11, marginLeft: 4 }}>{label}</span>}
     </span>
   )
 }
@@ -99,7 +100,18 @@ function EVBadge({ ev }) {
   )
 }
 
-/* ─── BET SLIP ────────────────────────────────────────────── */
+function MoneylineTag({ ml, book }) {
+  if (!ml) return null
+  const color = ml > 0 ? '#22c55e' : '#ef4444'
+  return (
+    <span style={{ fontFamily: 'JetBrains Mono, monospace', color, fontWeight: 600 }}>
+      {ml > 0 ? '+' : ''}{ml}
+      {book && <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 11, marginLeft: 4 }}>{book}</span>}
+    </span>
+  )
+}
+
+/* --- BET SLIP (Kalshi) --- */
 function BetSlip({ slip }) {
   if (!slip || !slip.bets || slip.bets.length === 0) return null
 
@@ -113,23 +125,35 @@ function BetSlip({ slip }) {
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div>
-          <div style={{ fontSize: 18, fontWeight: 800 }}>Your Bet Slip</div>
+          <div style={{ fontSize: 18, fontWeight: 800 }}>
+            <span style={{ marginRight: 8 }}>Kalshi Bet Slip</span>
+            <span style={{
+              background: '#3b82f620',
+              color: '#3b82f6',
+              padding: '2px 8px',
+              borderRadius: 4,
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: 0.5,
+              verticalAlign: 'middle',
+            }}>PREDICTION MARKET</span>
+          </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-            $100 bankroll &middot; Kelly-sized &middot; {slip.num_bets} bet{slip.num_bets !== 1 ? 's' : ''}
+            $100 bankroll &middot; Kelly-sized &middot; {slip.num_bets} contract{slip.num_bets !== 1 ? 's' : ''}
           </div>
         </div>
         <div style={{ textAlign: 'right' }}>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>TOTAL WAGERED</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>TOTAL INVESTED</div>
           <div style={{ fontSize: 20, fontWeight: 800, fontFamily: 'JetBrains Mono, monospace', color: 'var(--accent)' }}>
             ${slip.total_wagered.toFixed(2)}
           </div>
         </div>
       </div>
 
-      {/* Individual bets */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {slip.bets.map((bet, i) => {
           const started = isGameStarted(bet.game_time)
+          const buyPriceCents = Math.round((bet.buy_price || 0) * 100)
           return (
           <div key={i} style={{
             background: 'var(--bg-surface)',
@@ -145,8 +169,8 @@ function BetSlip({ slip }) {
           }}>
             <div style={{ flex: '1 1 200px' }}>
               <div style={{ fontWeight: 700, fontSize: 15 }}>
-                <span style={{ color: SIDE_COLOR[bet.side] }}>{bet.team}</span>
-                <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 13 }}> ML</span>
+                <span style={{ color: '#22c55e' }}>BUY YES</span>
+                <span style={{ color: 'var(--text-primary)', marginLeft: 6 }}>{bet.team}</span>
                 {started && <span style={{ marginLeft: 8 }}><LiveBadge /></span>}
               </div>
               <div style={{ fontSize: 12, color: started ? '#ef4444' : 'var(--text-muted)', marginTop: 2 }}>
@@ -157,10 +181,11 @@ function BetSlip({ slip }) {
             </div>
 
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-              <div style={{ textAlign: 'center', minWidth: 60 }}>
-                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Line</div>
-                <MoneylineTag ml={bet.moneyline} />
-                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>{bet.book}</div>
+              <div style={{ textAlign: 'center', minWidth: 55 }}>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Price</div>
+                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 15, color: '#3b82f6' }}>
+                  {buyPriceCents}&cent;
+                </div>
               </div>
               <div style={{ textAlign: 'center', minWidth: 50 }}>
                 <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Model</div>
@@ -181,15 +206,15 @@ function BetSlip({ slip }) {
                 borderRadius: 8,
                 padding: '6px 12px',
               }}>
-                <div style={{ fontSize: 10, color: '#22c55e', textTransform: 'uppercase', fontWeight: 700 }}>Bet</div>
+                <div style={{ fontSize: 10, color: '#22c55e', textTransform: 'uppercase', fontWeight: 700 }}>Invest</div>
                 <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 800, fontSize: 16, color: '#22c55e' }}>
                   ${bet.bet_amount.toFixed(2)}
                 </div>
               </div>
               <div style={{ textAlign: 'center', minWidth: 60 }}>
-                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>To Win</div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Profit</div>
                 <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 14, color: 'var(--accent)' }}>
-                  ${bet.potential_profit.toFixed(2)}
+                  +${bet.potential_profit.toFixed(2)}
                 </div>
               </div>
             </div>
@@ -225,11 +250,13 @@ function BetSlip({ slip }) {
   )
 }
 
-/* ─── GAME CARD ───────────────────────────────────────────── */
+/* --- GAME CARD (Kalshi) --- */
 function TodayGameCard({ game }) {
-  const [expanded, setExpanded] = useState(false)
   const isPass = game.value_side === 'PASS'
   const started = isGameStarted(game.game_time)
+  const homeCents = Math.round((game.kalshi_home_price || 0) * 100)
+  const awayCents = Math.round((game.kalshi_away_price || 0) * 100)
+  const valuePriceCents = Math.round((game.value_price || 0) * 100)
 
   return (
     <div
@@ -238,10 +265,8 @@ function TodayGameCard({ game }) {
         border: `1px solid ${started ? '#ef444440' : isPass ? 'var(--border)' : STRENGTH_COLOR[game.strength] + '40'}`,
         borderRadius: 10,
         padding: 16,
-        cursor: 'pointer',
         opacity: started ? 0.65 : 1,
       }}
-      onClick={() => setExpanded(e => !e)}
     >
       {started && (
         <div style={{
@@ -257,7 +282,7 @@ function TodayGameCard({ game }) {
           color: '#ef4444',
           fontWeight: 600,
         }}>
-          <LiveBadge /> Game has started — lines may have changed significantly
+          <LiveBadge /> Game has started — contract prices may have changed significantly
         </div>
       )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
@@ -268,8 +293,7 @@ function TodayGameCard({ game }) {
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
             {new Date(game.game_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
             {started && <span style={{ color: '#ef4444' }}> (started)</span>}
-            {game.game_total && <span> &middot; O/U {game.game_total}</span>}
-            <span> &middot; {game.num_books} books</span>
+            {game.kalshi_volume > 0 && <span> &middot; Vol: {game.kalshi_volume}</span>}
           </div>
         </div>
         <div style={{ textAlign: 'right' }}>
@@ -306,12 +330,14 @@ function TodayGameCard({ game }) {
             <div>
               <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>VALUE PICK</span>
               <div style={{ fontSize: 16, fontWeight: 700, color: SIDE_COLOR[game.value_side], marginTop: 2 }}>
-                {game.value_team} ({game.value_side})
+                BUY YES {game.value_team} ({game.value_side})
               </div>
             </div>
             <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Best Line</div>
-              <MoneylineTag ml={game.value_side === 'HOME' ? game.best_home_ml : game.best_away_ml} book={game.best_book} />
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Contract Price</div>
+              <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 18, color: '#3b82f6' }}>
+                {valuePriceCents}&cent;
+              </div>
             </div>
           </div>
         </div>
@@ -330,52 +356,28 @@ function TodayGameCard({ game }) {
           </div>
         </div>
         <div style={{ flex: 1 }}>
-          <div style={{ color: 'var(--text-muted)', fontSize: 11, marginBottom: 4 }}>VEGAS (no-vig)</div>
+          <div style={{ color: 'var(--text-muted)', fontSize: 11, marginBottom: 4 }}>KALSHI MARKET</div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'JetBrains Mono, monospace' }}>
-            <span>{game.away_team.split(' ').pop()} {(game.vegas_away_prob * 100).toFixed(0)}%</span>
-            <span>{game.home_team.split(' ').pop()} {(game.vegas_home_prob * 100).toFixed(0)}%</span>
+            <span>{game.away_team.split(' ').pop()} {awayCents}&cent;</span>
+            <span>{game.home_team.split(' ').pop()} {homeCents}&cent;</span>
           </div>
           <div style={{ display: 'flex', height: 4, borderRadius: 2, overflow: 'hidden', background: 'var(--border)', marginTop: 4 }}>
-            <div style={{ width: `${game.vegas_away_prob * 100}%`, background: '#3b82f6' }} />
-            <div style={{ width: `${game.vegas_home_prob * 100}%`, background: '#22c55e' }} />
+            <div style={{ width: `${(game.kalshi_away_price || 0) * 100}%`, background: '#3b82f6' }} />
+            <div style={{ width: `${(game.kalshi_home_price || 0) * 100}%`, background: '#22c55e' }} />
           </div>
         </div>
       </div>
 
-      {expanded && (
-        <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>
-            All Sportsbook Lines
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 8 }}>
-            {game.all_odds.map((o, i) => (
-              <div key={i} style={{
-                background: 'var(--bg-card)',
-                borderRadius: 6,
-                padding: '8px 12px',
-                fontSize: 13,
-              }}>
-                <div style={{ fontWeight: 600, textTransform: 'capitalize', marginBottom: 4, fontSize: 12 }}>
-                  {o.book.replace(/([a-z])([A-Z])/g, '$1 $2')}
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'JetBrains Mono, monospace' }}>
-                  <MoneylineTag ml={o.away_ml} />
-                  <MoneylineTag ml={o.home_ml} />
-                </div>
-              </div>
-            ))}
-          </div>
+      {game.kalshi_ticker && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, textAlign: 'right' }}>
+          {game.kalshi_ticker}
         </div>
       )}
-
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, textAlign: 'right' }}>
-        {expanded ? 'click to collapse' : 'click for all lines'}
-      </div>
     </div>
   )
 }
 
-/* ─── PLAYER PROP CARD ────────────────────────────────────── */
+/* --- PLAYER PROP CARD --- */
 function PropCard({ prop }) {
   const typeColor = PROP_TYPE_COLOR[prop.type] || 'var(--text-muted)'
   const typeLabel = PROP_TYPE_LABEL[prop.type] || prop.type
@@ -463,7 +465,7 @@ function PropCard({ prop }) {
   )
 }
 
-/* ─── SEASON EDGE ROW ─────────────────────────────────────── */
+/* --- SEASON EDGE ROW --- */
 function SeasonEdgeRow({ edge }) {
   const isPass = edge.recommendation === 'PASS'
   const color = SIDE_COLOR[edge.recommendation] || 'var(--text-muted)'
@@ -512,7 +514,7 @@ function SeasonEdgeRow({ edge }) {
   )
 }
 
-/* ─── MAIN PAGE ───────────────────────────────────────────── */
+/* --- MAIN PAGE --- */
 export default function EdgePage() {
   const [tab, setTab] = useState('today')
   const [todayData, setTodayData] = useState(null)
@@ -554,10 +556,21 @@ export default function EdgePage() {
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 24, fontWeight: 800, marginBottom: 4 }}>
           Edge Finder
+          <span style={{
+            background: '#3b82f620',
+            color: '#3b82f6',
+            padding: '3px 10px',
+            borderRadius: 6,
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: 0.5,
+            marginLeft: 10,
+            verticalAlign: 'middle',
+          }}>KALSHI</span>
         </h1>
         <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-          Model vs Vegas &mdash; find value where the model disagrees with the market.
-          For research/entertainment only.
+          Model vs Kalshi prediction market &mdash; find contracts where the model disagrees with consumer-set prices.
+          Buy YES when our model says the true probability is higher than the contract price.
         </p>
       </div>
 
@@ -599,17 +612,15 @@ export default function EdgePage() {
         </div>
       )}
 
-      {/* ═══ TODAY TAB ═══ */}
+      {/* TODAY TAB */}
       {!loading && !error && tab === 'today' && todayData && (
         <>
-          {/* Bet Slip — the main attraction */}
           {todayData.bet_slip && <BetSlip slip={todayData.bet_slip} />}
 
-          {/* Summary bar */}
           <div style={{ display: 'flex', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
             {[
               { label: 'Games', value: todayData.total_games },
-              { label: 'Value Bets', value: todayData.value_bets, color: '#22c55e' },
+              { label: 'Value Contracts', value: todayData.value_bets, color: '#22c55e' },
               { label: 'Date', value: todayData.date },
             ].map((s, i) => (
               <div key={i} style={{
@@ -627,7 +638,6 @@ export default function EdgePage() {
             ))}
           </div>
 
-          {/* Game cards */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {todayData.games.map((game, i) => (
               <TodayGameCard key={i} game={game} />
@@ -636,16 +646,21 @@ export default function EdgePage() {
 
           {todayData.games.length === 0 && (
             <div style={{ textAlign: 'center', padding: 48, color: 'var(--text-muted)' }}>
-              {todayData.message || 'No games with odds available today.'}
+              {todayData.message || 'No Kalshi markets found for today\'s MLB games.'}
+            </div>
+          )}
+
+          {todayData.kalshi_status && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12, textAlign: 'right' }}>
+              {todayData.kalshi_status}
             </div>
           )}
         </>
       )}
 
-      {/* ═══ PROPS TAB ═══ */}
+      {/* PROPS TAB */}
       {!loading && !error && tab === 'props' && propsData && (
         <>
-          {/* Props Bet Slip */}
           {propsData.bet_slip && propsData.bet_slip.bets.length > 0 && (
             <div style={{
               background: 'linear-gradient(135deg, rgba(168,85,247,0.06), rgba(59,130,246,0.06))',
@@ -818,7 +833,6 @@ export default function EdgePage() {
             ))}
           </div>
 
-          {/* Props grid */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 12 }}>
             {filteredProps.map((prop, i) => (
               <PropCard key={i} prop={prop} />
@@ -833,7 +847,7 @@ export default function EdgePage() {
         </>
       )}
 
-      {/* ═══ SEASON TAB ═══ */}
+      {/* SEASON TAB */}
       {!loading && !error && tab === 'season' && seasonData && (
         <>
           <div style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
@@ -887,8 +901,26 @@ export default function EdgePage() {
         </>
       )}
 
+      {/* How Kalshi Works */}
+      {tab === 'today' && (
+        <div style={{
+          marginTop: 24,
+          padding: 16,
+          background: 'rgba(59,130,246,0.05)',
+          border: '1px solid rgba(59,130,246,0.2)',
+          borderRadius: 8,
+          fontSize: 12,
+          color: 'var(--text-secondary)',
+          lineHeight: 1.6,
+        }}>
+          <strong style={{ color: '#3b82f6' }}>How Kalshi Works:</strong> Kalshi is a prediction market where contract prices = implied probabilities.
+          A contract at 55&cent; means the market thinks there's a 55% chance. If our model says 62%, that's a 7% edge &mdash; buy YES.
+          Each contract pays $1 if correct, $0 if wrong. Prices are set by consumers, not quants, so there are more inefficiencies to exploit.
+        </div>
+      )}
+
       <div style={{
-        marginTop: 32,
+        marginTop: 16,
         padding: 16,
         background: 'rgba(239,68,68,0.05)',
         border: '1px solid rgba(239,68,68,0.2)',
@@ -898,7 +930,7 @@ export default function EdgePage() {
         lineHeight: 1.6,
       }}>
         <strong style={{ color: '#ef4444' }}>Disclaimer:</strong> This tool is for research and entertainment purposes only.
-        Not gambling advice. Past model performance does not guarantee future results. Gamble responsibly.
+        Not gambling advice. Past model performance does not guarantee future results. Trade responsibly.
       </div>
     </div>
   )
