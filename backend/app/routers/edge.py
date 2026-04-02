@@ -147,18 +147,17 @@ async def edge_today(request: Request):
     for team in standings:
         team_by_name[team["name"]] = team
 
-    # Fetch Kalshi MLB markets
-    kalshi_markets = await fetch_mlb_markets()
+    # Fetch Kalshi MLB game markets
+    kalshi_games = await fetch_mlb_markets()
 
-    if not kalshi_markets:
+    if not kalshi_games:
         return {
             "date": datetime.now(timezone(timedelta(hours=-7))).strftime("%Y-%m-%d"),
             "games": [],
-            "message": "No Kalshi markets available. Check KALSHI_API_KEY and KALSHI_PRIVATE_KEY_PATH env vars.",
+            "message": "No Kalshi MLB game markets found. Markets may not be posted yet for today.",
             "kalshi_status": get_kalshi_status(),
         }
 
-    # Try to match Kalshi markets to our model's games
     # Also fetch today's schedule for game times
     api_client = getattr(request.app.state, "api_client", None)
     pacific = timezone(timedelta(hours=-7))
@@ -177,95 +176,47 @@ async def edge_today(request: Request):
         except Exception:
             pass
 
-    # Build schedule lookup: team_name → game info
-    schedule_by_team = {}
+    # Build game time lookup
+    game_times = {}
     for g in schedule_games:
-        home_name = g["teams"]["home"]["team"]["name"]
-        away_name = g["teams"]["away"]["team"]["name"]
-        game_time = g.get("gameDate", "")
-        schedule_by_team[home_name] = {"opponent": away_name, "side": "HOME", "game_time": game_time}
-        schedule_by_team[away_name] = {"opponent": home_name, "side": "AWAY", "game_time": game_time}
+        home = g["teams"]["home"]["team"]["name"]
+        game_times[home] = g.get("gameDate", "")
 
     value_games = []
-    seen_matchups = set()  # Avoid duplicate matchups
 
-    for market in kalshi_markets:
-        title = market["title"]
-        yes_price = market["yes_price"]
-        no_price = market["no_price"]
-        yes_bid = market["yes_bid"]
-        no_bid = market["no_bid"]
+    for game in kalshi_games:
+        home_name = game["home_team"]
+        away_name = game["away_team"]
+        kalshi_home = game["home_price"]
+        kalshi_away = game["away_price"]
 
-        if not yes_price or yes_price <= 0:
+        if kalshi_home <= 0 and kalshi_away <= 0:
             continue
 
-        # Extract team from Kalshi market title
-        team_name = match_kalshi_team(title)
-        if not team_name:
+        # Find our model projections
+        home_data = team_by_name.get(home_name)
+        away_data = team_by_name.get(away_name)
+        if not home_data or not away_data:
             continue
 
-        # Find our model data
-        team_data = team_by_name.get(team_name)
-        if not team_data:
+        home_proj = cache.get_team(home_data["team_id"])
+        away_proj = cache.get_team(away_data["team_id"])
+        if not home_proj or not away_proj:
             continue
-
-        team_proj = cache.get_team(team_data["team_id"])
-        if not team_proj:
-            continue
-
-        # Find the opponent from the schedule
-        sched = schedule_by_team.get(team_name)
-        if not sched:
-            continue
-
-        opponent_name = sched["opponent"]
-        side = sched["side"]
-        game_time = sched["game_time"]
-
-        opponent_data = team_by_name.get(opponent_name)
-        if not opponent_data:
-            continue
-        opponent_proj = cache.get_team(opponent_data["team_id"])
-        if not opponent_proj:
-            continue
-
-        # Avoid processing the same matchup twice
-        matchup_key = tuple(sorted([team_name, opponent_name]))
-        if matchup_key in seen_matchups:
-            continue
-        seen_matchups.add(matchup_key)
 
         # Model win probability (log5 + home field)
-        if side == "HOME":
-            home_name, away_name = team_name, opponent_name
-            home_wpct = team_proj.get("win_pct", 0.5)
-            away_wpct = opponent_proj.get("win_pct", 0.5)
-        else:
-            home_name, away_name = opponent_name, team_name
-            home_wpct = opponent_proj.get("win_pct", 0.5)
-            away_wpct = team_proj.get("win_pct", 0.5)
-
+        home_wpct = home_proj.get("win_pct", 0.5)
+        away_wpct = away_proj.get("win_pct", 0.5)
         denom = home_wpct * (1 - away_wpct) + away_wpct * (1 - home_wpct)
         model_home = (home_wpct * (1 - away_wpct)) / denom if denom > 0 else 0.5
         model_home = min(0.95, max(0.05, model_home + 0.035))  # home field
         model_away = 1 - model_home
 
-        # Kalshi implied probability = contract price
-        # The market title mentions a specific team — yes_price = probability that team wins
-        kalshi_team_prob = yes_price  # contract price IS the implied probability
-        if side == "HOME":
-            kalshi_home = kalshi_team_prob
-            kalshi_away = 1 - kalshi_team_prob
-        else:
-            kalshi_away = kalshi_team_prob
-            kalshi_home = 1 - kalshi_team_prob
-
         # Edge = model prob - Kalshi implied prob
         home_edge = model_home - kalshi_home
         away_edge = model_away - kalshi_away
 
-        # For Kalshi: decimal odds = 1 / contract_price
-        # Buy YES at $0.55 → pays $1.00 → decimal odds = 1/0.55 = 1.818
+        # Decimal odds = 1 / contract_price (buy YES at 55¢, pays $1)
         home_dec_odds = 1 / kalshi_home if kalshi_home > 0 else 1
         away_dec_odds = 1 / kalshi_away if kalshi_away > 0 else 1
 
@@ -274,6 +225,9 @@ async def edge_today(request: Request):
         away_ev = _ev(model_away, away_dec_odds)
         home_kelly = _kelly(model_home, home_dec_odds)
         away_kelly = _kelly(model_away, away_dec_odds)
+
+        # Get game time from schedule
+        game_time = game_times.get(home_name, "")
 
         # Which side has value?
         if home_ev > away_ev and home_ev > 0:
@@ -321,8 +275,8 @@ async def edge_today(request: Request):
             # Kalshi market prices (= implied probabilities)
             "kalshi_home_price": round(kalshi_home, 3),
             "kalshi_away_price": round(kalshi_away, 3),
-            "kalshi_ticker": market["ticker"],
-            "kalshi_volume": market["volume"],
+            "kalshi_ticker": game["event_ticker"],
+            "kalshi_volume": game["volume"],
             # Edge analysis
             "value_side": value_side,
             "value_team": value_team,
