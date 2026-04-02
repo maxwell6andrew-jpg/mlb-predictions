@@ -40,6 +40,37 @@ const PROP_TYPE_COLOR = {
   pitcher_strikeouts: '#22c55e',
 }
 
+// Inject pulse animation
+if (typeof document !== 'undefined' && !document.getElementById('edge-pulse-style')) {
+  const style = document.createElement('style')
+  style.id = 'edge-pulse-style'
+  style.textContent = `@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }`
+  document.head.appendChild(style)
+}
+
+function isGameStarted(gameTime) {
+  if (!gameTime) return false
+  return new Date(gameTime) < new Date()
+}
+
+function LiveBadge() {
+  return (
+    <span style={{
+      background: '#ef444420',
+      color: '#ef4444',
+      padding: '2px 8px',
+      borderRadius: 4,
+      fontSize: 10,
+      fontWeight: 800,
+      letterSpacing: 1,
+      textTransform: 'uppercase',
+      animation: 'pulse 2s infinite',
+    }}>
+      LIVE
+    </span>
+  )
+}
+
 function MoneylineTag({ ml, book }) {
   if (!ml) return null
   const color = ml > 0 ? '#22c55e' : '#ef4444'
@@ -97,10 +128,12 @@ function BetSlip({ slip }) {
 
       {/* Individual bets */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {slip.bets.map((bet, i) => (
+        {slip.bets.map((bet, i) => {
+          const started = isGameStarted(bet.game_time)
+          return (
           <div key={i} style={{
             background: 'var(--bg-surface)',
-            border: '1px solid var(--border)',
+            border: `1px solid ${started ? '#ef444430' : 'var(--border)'}`,
             borderRadius: 10,
             padding: '12px 16px',
             display: 'flex',
@@ -108,15 +141,18 @@ function BetSlip({ slip }) {
             alignItems: 'center',
             gap: 12,
             flexWrap: 'wrap',
+            opacity: started ? 0.6 : 1,
           }}>
             <div style={{ flex: '1 1 200px' }}>
               <div style={{ fontWeight: 700, fontSize: 15 }}>
                 <span style={{ color: SIDE_COLOR[bet.side] }}>{bet.team}</span>
                 <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontSize: 13 }}> ML</span>
+                {started && <span style={{ marginLeft: 8 }}><LiveBadge /></span>}
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              <div style={{ fontSize: 12, color: started ? '#ef4444' : 'var(--text-muted)', marginTop: 2 }}>
                 {bet.matchup} &middot;{' '}
                 {new Date(bet.game_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                {started && ' (started)'}
               </div>
             </div>
 
@@ -158,7 +194,7 @@ function BetSlip({ slip }) {
               </div>
             </div>
           </div>
-        ))}
+        )})}
       </div>
 
       {/* Summary footer */}
@@ -193,18 +229,37 @@ function BetSlip({ slip }) {
 function TodayGameCard({ game }) {
   const [expanded, setExpanded] = useState(false)
   const isPass = game.value_side === 'PASS'
+  const started = isGameStarted(game.game_time)
 
   return (
     <div
       style={{
         background: 'var(--bg-surface)',
-        border: `1px solid ${isPass ? 'var(--border)' : STRENGTH_COLOR[game.strength] + '40'}`,
+        border: `1px solid ${started ? '#ef444440' : isPass ? 'var(--border)' : STRENGTH_COLOR[game.strength] + '40'}`,
         borderRadius: 10,
         padding: 16,
         cursor: 'pointer',
+        opacity: started ? 0.65 : 1,
       }}
       onClick={() => setExpanded(e => !e)}
     >
+      {started && (
+        <div style={{
+          background: '#ef444410',
+          border: '1px solid #ef444430',
+          borderRadius: 6,
+          padding: '6px 12px',
+          marginBottom: 10,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          fontSize: 12,
+          color: '#ef4444',
+          fontWeight: 600,
+        }}>
+          <LiveBadge /> Game has started — betting lines may be closed
+        </div>
+      )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
         <div>
           <div style={{ fontSize: 15, fontWeight: 700 }}>
@@ -212,6 +267,7 @@ function TodayGameCard({ game }) {
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
             {new Date(game.game_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+            {started && <span style={{ color: '#ef4444' }}> (started)</span>}
             {game.game_total && <span> &middot; O/U {game.game_total}</span>}
             <span> &middot; {game.num_books} books</span>
           </div>
@@ -323,14 +379,29 @@ function TodayGameCard({ game }) {
 function PropCard({ prop }) {
   const typeColor = PROP_TYPE_COLOR[prop.type] || 'var(--text-muted)'
   const typeLabel = PROP_TYPE_LABEL[prop.type] || prop.type
+  const started = isGameStarted(prop.game_time)
 
   return (
     <div style={{
       background: 'var(--bg-surface)',
-      border: `1px solid ${typeColor}30`,
+      border: `1px solid ${started ? '#ef444430' : typeColor + '30'}`,
       borderRadius: 10,
       padding: '14px 16px',
+      opacity: started ? 0.65 : 1,
     }}>
+      {started && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          marginBottom: 8,
+          fontSize: 11,
+          color: '#ef4444',
+          fontWeight: 600,
+        }}>
+          <LiveBadge /> Game started
+        </div>
+      )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
