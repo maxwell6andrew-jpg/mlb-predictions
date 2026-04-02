@@ -19,6 +19,7 @@ from pathlib import Path
 # Config from environment
 KALSHI_API_KEY = os.environ.get("KALSHI_API_KEY", "")
 KALSHI_PRIVATE_KEY_PATH = os.environ.get("KALSHI_PRIVATE_KEY_PATH", "")
+KALSHI_PRIVATE_KEY_PEM = os.environ.get("KALSHI_PRIVATE_KEY_PEM", "")  # Raw PEM content (for Render)
 
 # Use production API
 BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
@@ -66,15 +67,22 @@ KALSHI_TEAM_NAMES = {
 
 
 def _load_private_key():
-    """Load RSA private key from PEM file."""
-    key_path = KALSHI_PRIVATE_KEY_PATH
-    if not key_path or not Path(key_path).exists():
-        return None
+    """Load RSA private key from PEM file or env var."""
     try:
         from cryptography.hazmat.primitives import serialization
-        with open(key_path, "rb") as f:
-            private_key = serialization.load_pem_private_key(f.read(), password=None)
-        return private_key
+
+        # Option 1: Raw PEM content in env var (for Render / cloud deploys)
+        if KALSHI_PRIVATE_KEY_PEM:
+            pem_data = KALSHI_PRIVATE_KEY_PEM.encode()
+            return serialization.load_pem_private_key(pem_data, password=None)
+
+        # Option 2: File path
+        key_path = KALSHI_PRIVATE_KEY_PATH
+        if key_path and Path(key_path).exists():
+            with open(key_path, "rb") as f:
+                return serialization.load_pem_private_key(f.read(), password=None)
+
+        return None
     except Exception as e:
         print(f"  Kalshi: Failed to load private key: {e}")
         return None
