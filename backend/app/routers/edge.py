@@ -83,6 +83,75 @@ def _kelly(model_prob: float, decimal_odds: float) -> float:
     return max(0.0, f * KELLY_FRACTION)
 
 
+def _poisson_over(expected: float, line: float) -> float:
+    """P(X > line) using Poisson CDF. X ~ Poisson(expected)."""
+    # P(X > line) = 1 - P(X <= floor(line))
+    k_max = int(line)  # e.g. Over 8 means > 8, so need P(X > 8) = 1 - P(X <= 8)
+    cdf = 0.0
+    for k in range(k_max + 1):
+        # Poisson PMF: e^-λ * λ^k / k!
+        log_pmf = -expected + k * math.log(expected) - math.lgamma(k + 1)
+        cdf += math.exp(log_pmf)
+    return 1 - cdf
+
+
+def _normal_cdf(z: float) -> float:
+    """Standard normal CDF approximation."""
+    return 0.5 * (1 + math.erf(z / math.sqrt(2)))
+
+
+def _append_prop(all_props, kp, model_prob, kalshi_price, edge_pct,
+                 prop_label, prop_category, hit_line, game_time,
+                 player, player_team, opp_team, matchup,
+                 reasoning, extra=None):
+    """Build and append a prop dict. Always stores YES-side values."""
+    abs_edge = abs(edge_pct)
+    if edge_pct > 3:
+        recommendation = "BUY YES"
+        strength = "STRONG" if abs_edge > 8 else "MODERATE" if abs_edge > 5 else "LEAN"
+    elif edge_pct < -3:
+        recommendation = "BUY NO"
+        strength = "STRONG" if abs_edge > 8 else "MODERATE" if abs_edge > 5 else "LEAN"
+    else:
+        recommendation = "PASS"
+        strength = "NO EDGE"
+
+    # EV calculation (from whichever side we'd bet)
+    if edge_pct > 0:
+        dec_odds = 1 / kalshi_price if kalshi_price > 0 else 1
+        ev = _ev(model_prob, dec_odds)
+    elif edge_pct < 0:
+        no_price = 1 - kalshi_price
+        dec_odds = 1 / no_price if no_price > 0 else 1
+        ev = _ev(1 - model_prob, dec_odds)
+    else:
+        ev = 0
+
+    prop = {
+        "player": player,
+        "player_team": player_team,
+        "opp_team": opp_team,
+        "matchup": matchup,
+        "prop": prop_label,
+        "prop_category": prop_category,  # "hits", "totals", "spread", "rfi"
+        "type": prop_category,
+        "hit_line": hit_line,
+        "kalshi_price": round(kalshi_price, 4),  # Always YES price
+        "kalshi_ticker": kp.get("ticker", ""),
+        "model_prob": round(model_prob, 3),       # Always YES probability
+        "edge_pct": edge_pct,                     # Positive = BUY YES, negative = BUY NO
+        "ev_per_100": round(ev, 2),
+        "recommendation": recommendation,
+        "strength": strength,
+        "game_time": game_time,
+        "started": False,  # We already filtered started games
+        "reasoning": reasoning,
+    }
+    if extra:
+        prop.update(extra)
+    all_props.append(prop)
+
+
 @router.get("/season")
 @limiter.limit("20/minute")
 async def edge_season(request: Request):
@@ -390,190 +459,208 @@ async def edge_props(request: Request):
                         "proj": sp_proj,
                     }
 
-    # Build game time lookup
-    game_times = {}
-    for g in games_raw:
-        home = g["teams"]["home"]["team"]["name"]
-        away = g["teams"]["away"]["team"]["name"]
-        gt = g.get("gameDate", "")
-        game_times[home] = gt
-        game_times[away] = gt
+    # Build team run projection lookup (runs per game)
+    standings = getattr(request.app.state, "standings_cache", [])
+    team_rpg = {}  # team_name → (rs_per_game, ra_per_game)
+    for team in standings:
+        team_name = team["name"]
+        team_id = team["team_id"]
+        t_proj = cache.get_team(team_id)
+        if t_proj:
+            rs = t_proj.get("projected_rs", 700)
+            ra = t_proj.get("projected_ra", 700)
+            team_rpg[team_name] = (rs / 162, ra / 162)
 
     all_props = []
 
     for kp in kalshi_props:
-        if kp.get("prop_type") != "KXMLBHIT":
-            continue  # Only hit props for now (most liquid + our model covers)
+        prop_type = kp.get("prop_type", "")
         if not kp.get("player_name") or kp.get("price", 0) <= 0:
             continue
 
         player_name = kp["player_name"]
         kalshi_price = kp["price"]
-        hit_line = kp.get("line", 1)  # 1, 2, 3, 4
-        player_team = kp.get("player_team", "")
         home_team = kp.get("home_team", "")
         away_team = kp.get("away_team", "")
         game_time = kp.get("game_time_iso", "")
 
-        # Determine opposing pitcher
-        if player_team == home_team:
-            opp_team = away_team
-        elif player_team == away_team:
-            opp_team = home_team
-        else:
-            opp_team = ""
-
-        opp_pitcher_info = pitcher_by_team.get(opp_team) if opp_team else None
-        opp_pitcher_name = opp_pitcher_info["name"] if opp_pitcher_info else "Unknown"
-        opp_pitcher_proj = opp_pitcher_info["proj"] if opp_pitcher_info else None
-
-        # Pitcher quality multiplier
-        if opp_pitcher_proj:
-            p_whip = opp_pitcher_proj.get("whip", 1.30)
-            pitcher_hit_mult = p_whip / 1.30  # >1 = gives up more hits
-        else:
-            pitcher_hit_mult = 1.0
-
-        # Try to find batter projection by name match
-        batter_avg = None
-        batter_proj_data = None
-
-        # Search through cached batters for name match
-        for lahman_id, proj in cache.batting.items():
-            proj_name = proj.get("name", "")
-            if proj_name.lower().strip() == player_name.lower().strip():
-                batter_avg = proj.get("avg", LG_AVG)
-                batter_proj_data = proj
-                break
-
-        if batter_avg is None:
-            batter_avg = LG_AVG  # fallback to league average
-
-        # Matchup-adjusted AVG
-        matchup_avg = min(0.400, batter_avg * pitcher_hit_mult)
-
-        # Model probability calculations
-        # P(1+ hits in ~4 AB) = 1 - (1 - AVG)^4
-        # P(2+ hits in ~4 AB) = 1 - (1-AVG)^4 - 4*AVG*(1-AVG)^3
-        # P(3+ hits) = 1 - P(0) - P(1) - P(2)
-        ab = 4.0  # expected at-bats
-        p_no_hit = (1 - matchup_avg) ** ab
-
-        if hit_line == 1:
-            model_prob = 1 - p_no_hit  # P(1+ hits)
-        elif hit_line == 2:
-            p_exactly_1 = ab * matchup_avg * ((1 - matchup_avg) ** (ab - 1))
-            model_prob = 1 - p_no_hit - p_exactly_1  # P(2+ hits)
-        elif hit_line == 3:
-            p_exactly_1 = ab * matchup_avg * ((1 - matchup_avg) ** (ab - 1))
-            p_exactly_2 = (ab * (ab - 1) / 2) * (matchup_avg ** 2) * ((1 - matchup_avg) ** (ab - 2))
-            model_prob = 1 - p_no_hit - p_exactly_1 - p_exactly_2
-        else:
-            model_prob = 0.05  # 4+ hits is rare, rough estimate
-
-        model_prob = max(0.01, min(0.99, model_prob))
-
-        # Edge = model probability - Kalshi contract price
-        edge = model_prob - kalshi_price
-        edge_pct = round(edge * 100, 1)
-
-        # Skip tiny/no edges
-        if abs(edge_pct) < 1:
-            continue
-
-        # Determine if game has started
-        started = False
+        # Skip started games entirely
         if game_time:
             try:
                 game_dt = datetime.fromisoformat(game_time.replace("Z", "+00:00"))
-                started = game_dt < datetime.now(timezone.utc)
+                if game_dt < datetime.now(timezone.utc):
+                    continue
             except Exception:
                 pass
 
-        # Recommendation
-        if edge_pct > 3:
-            recommendation = "BUY YES"
-            strength = "STRONG" if edge_pct > 8 else "MODERATE" if edge_pct > 5 else "LEAN"
-        elif edge_pct < -3:
-            recommendation = "BUY NO"
-            strength = "STRONG" if edge_pct < -8 else "MODERATE" if edge_pct < -5 else "LEAN"
-        else:
-            recommendation = "PASS"
-            strength = "NO EDGE"
+        # --- HIT PROPS (KXMLBHIT) ---
+        if prop_type == "KXMLBHIT":
+            hit_line = kp.get("line", 1)
+            player_team = kp.get("player_team", "")
 
-        # EV calculation
-        if edge_pct > 0:
-            dec_odds = 1 / kalshi_price if kalshi_price > 0 else 1
-            ev = _ev(model_prob, dec_odds)
-        elif edge_pct < 0:
-            no_price = 1 - kalshi_price
-            dec_odds = 1 / no_price if no_price > 0 else 1
-            ev = _ev(1 - model_prob, dec_odds)
-        else:
-            ev = 0
+            if player_team == home_team:
+                opp_team = away_team
+            elif player_team == away_team:
+                opp_team = home_team
+            else:
+                opp_team = ""
 
-        all_props.append({
-            "player": player_name,
-            "player_team": player_team,
-            "opp_team": opp_team,
-            "matchup": f"vs {opp_pitcher_name} ({opp_team})" if opp_team else "",
-            "prop": f"{hit_line}+ hits",
-            "type": "hits",
-            "hit_line": hit_line,
-            "kalshi_price": round(kalshi_price, 4),
-            "kalshi_ticker": kp.get("ticker", ""),
-            "model_prob": round(model_prob, 3),
-            "edge_pct": edge_pct,
-            "ev_per_100": round(ev, 2),
-            "recommendation": recommendation,
-            "strength": strength,
-            "matchup_avg": round(matchup_avg, 3),
-            "batter_avg": round(batter_avg, 3),
-            "pitcher_mult": round(pitcher_hit_mult, 2),
-            "game_time": game_time,
-            "started": started,
-            "reasoning": (
-                f"{player_name} .{int(batter_avg * 1000)} AVG"
-                f"{f' (adj .{int(matchup_avg * 1000)} vs {opp_pitcher_name})' if opp_pitcher_proj else ''}"
-                f" → {model_prob:.0%} chance of {hit_line}+ hits"
-                f" | Kalshi {int(kalshi_price * 100)}¢"
-                f" | Edge {'+' if edge_pct > 0 else ''}{edge_pct}%"
-            ),
-        })
+            opp_pitcher_info = pitcher_by_team.get(opp_team) if opp_team else None
+            opp_pitcher_name = opp_pitcher_info["name"] if opp_pitcher_info else "Unknown"
+            opp_pitcher_proj = opp_pitcher_info["proj"] if opp_pitcher_info else None
 
-    # Sort by absolute edge (biggest edges first), BUY YES first
+            if opp_pitcher_proj:
+                p_whip = opp_pitcher_proj.get("whip", 1.30)
+                pitcher_hit_mult = p_whip / 1.30
+            else:
+                pitcher_hit_mult = 1.0
+
+            batter_avg = None
+            for lahman_id, proj in cache.batting.items():
+                if proj.get("name", "").lower().strip() == player_name.lower().strip():
+                    batter_avg = proj.get("avg", LG_AVG)
+                    break
+            if batter_avg is None:
+                batter_avg = LG_AVG
+
+            matchup_avg = min(0.400, batter_avg * pitcher_hit_mult)
+            ab = 4.0
+            p_no_hit = (1 - matchup_avg) ** ab
+
+            if hit_line == 1:
+                model_prob = 1 - p_no_hit
+            elif hit_line == 2:
+                p1 = ab * matchup_avg * ((1 - matchup_avg) ** (ab - 1))
+                model_prob = 1 - p_no_hit - p1
+            elif hit_line == 3:
+                p1 = ab * matchup_avg * ((1 - matchup_avg) ** (ab - 1))
+                p2 = (ab * (ab - 1) / 2) * (matchup_avg ** 2) * ((1 - matchup_avg) ** (ab - 2))
+                model_prob = 1 - p_no_hit - p1 - p2
+            else:
+                model_prob = 0.05
+
+            model_prob = max(0.01, min(0.99, model_prob))
+            edge_pct = round((model_prob - kalshi_price) * 100, 1)
+            if abs(edge_pct) < 1:
+                continue
+
+            _append_prop(all_props, kp, model_prob, kalshi_price, edge_pct,
+                         prop_label=f"{hit_line}+ hits", prop_category="hits",
+                         hit_line=hit_line, game_time=game_time,
+                         player=player_name, player_team=player_team, opp_team=opp_team,
+                         matchup=f"vs {opp_pitcher_name} ({opp_team})" if opp_team else "",
+                         extra={"matchup_avg": round(matchup_avg, 3), "batter_avg": round(batter_avg, 3), "pitcher_mult": round(pitcher_hit_mult, 2)},
+                         reasoning=f"{player_name} .{int(batter_avg*1000)} AVG → {model_prob:.0%} chance of {hit_line}+ hits | Kalshi {int(kalshi_price*100)}¢")
+
+        # --- TOTAL RUNS (KXMLBTOTAL) ---
+        elif prop_type == "KXMLBTOTAL":
+            run_line = kp.get("line", 8)
+            home_rpg = team_rpg.get(home_team, (4.3, 4.3))
+            away_rpg = team_rpg.get(away_team, (4.3, 4.3))
+            # Expected total = away offense vs home pitching + home offense vs away pitching
+            expected_total = away_rpg[0] * (home_rpg[1] / 4.3) + home_rpg[0] * (away_rpg[1] / 4.3)
+            # Use Poisson approximation: P(total > line) ≈ 1 - Poisson CDF
+            model_prob = _poisson_over(expected_total, run_line)
+            model_prob = max(0.01, min(0.99, model_prob))
+            edge_pct = round((model_prob - kalshi_price) * 100, 1)
+            if abs(edge_pct) < 1:
+                continue
+
+            _append_prop(all_props, kp, model_prob, kalshi_price, edge_pct,
+                         prop_label=f"Over {run_line} runs", prop_category="totals",
+                         hit_line=0, game_time=game_time,
+                         player=f"{away_team} vs {home_team}", player_team="", opp_team="",
+                         matchup=f"{away_team} @ {home_team}",
+                         reasoning=f"Model expects {expected_total:.1f} total runs | Line {run_line} | Kalshi {int(kalshi_price*100)}¢")
+
+        # --- SPREAD (KXMLBSPREAD) ---
+        elif prop_type == "KXMLBSPREAD":
+            spread_val = kp.get("line", 1.5)
+            spread_team_city = kp.get("spread_team", "")
+            # Figure out which team the spread is for
+            spread_team = home_team if spread_team_city and spread_team_city.lower() in home_team.lower() else away_team
+            other_team = away_team if spread_team == home_team else home_team
+            s_rpg = team_rpg.get(spread_team, (4.3, 4.3))
+            o_rpg = team_rpg.get(other_team, (4.3, 4.3))
+            # Expected margin = spread_team offense adjusted by opponent pitching - opponent offense adjusted
+            spread_team_runs = s_rpg[0] * (o_rpg[1] / 4.3)
+            other_team_runs = o_rpg[0] * (s_rpg[1] / 4.3)
+            expected_margin = spread_team_runs - other_team_runs
+            # P(win by > spread) using normal approximation (std ~3.5 runs)
+            std_dev = 3.5
+            z = (expected_margin - spread_val) / std_dev
+            model_prob = max(0.01, min(0.99, _normal_cdf(z)))
+            edge_pct = round((model_prob - kalshi_price) * 100, 1)
+            if abs(edge_pct) < 1:
+                continue
+
+            _append_prop(all_props, kp, model_prob, kalshi_price, edge_pct,
+                         prop_label=kp.get("prop_label", f"{spread_team_city} -{spread_val}"),
+                         prop_category="spread", hit_line=0, game_time=game_time,
+                         player=kp.get("player_name", ""), player_team=spread_team, opp_team=other_team,
+                         matchup=f"{away_team} @ {home_team}",
+                         reasoning=f"Model margin: {spread_team_city} by {expected_margin:+.1f} runs | Spread {spread_val} | Kalshi {int(kalshi_price*100)}¢")
+
+        # --- RUN FIRST INNING (KXMLBRFI) ---
+        elif prop_type == "KXMLBRFI":
+            # Estimate P(at least 1 run in 1st inning)
+            # Use starting pitcher ERA to estimate 1st inning run probability
+            home_sp = pitcher_by_team.get(home_team)
+            away_sp = pitcher_by_team.get(away_team)
+            home_era = home_sp["proj"].get("era", LG_ERA) if home_sp and home_sp["proj"] else LG_ERA
+            away_era = away_sp["proj"].get("era", LG_ERA) if away_sp and away_sp["proj"] else LG_ERA
+            # Expected runs per inning = ERA / 9
+            # P(0 runs in half-inning) ≈ Poisson(0, ERA/9) = e^(-ERA/9)
+            # P(run scored in full 1st inning) = 1 - P(0 top) * P(0 bottom)
+            p_no_run_top = math.exp(-home_era / 9)   # home pitcher faces away batters
+            p_no_run_bot = math.exp(-away_era / 9)    # away pitcher faces home batters
+            model_prob = 1 - (p_no_run_top * p_no_run_bot)
+            model_prob = max(0.01, min(0.99, model_prob))
+            edge_pct = round((model_prob - kalshi_price) * 100, 1)
+            if abs(edge_pct) < 1:
+                continue
+
+            sp_names = []
+            if away_sp: sp_names.append(away_sp["name"])
+            if home_sp: sp_names.append(home_sp["name"])
+
+            _append_prop(all_props, kp, model_prob, kalshi_price, edge_pct,
+                         prop_label="Run in 1st", prop_category="rfi",
+                         hit_line=0, game_time=game_time,
+                         player=f"{away_team} vs {home_team}", player_team="", opp_team="",
+                         matchup=" vs ".join(sp_names) if sp_names else f"{away_team} @ {home_team}",
+                         reasoning=f"SPs: {', '.join(sp_names)} | Model {model_prob:.0%} chance of 1st inning run | Kalshi {int(kalshi_price*100)}¢")
+
+    # Sort: edges first (non-PASS), then by absolute edge size
     all_props.sort(key=lambda p: (p["recommendation"] != "PASS", abs(p["edge_pct"])), reverse=True)
 
-    # --- BUILD $100 BET SLIP (Kalshi only) ---
+    # --- BUILD $100 BET SLIP ---
     bankroll = 100.0
     bet_slip_bets = []
     remaining = bankroll
 
     for prop in all_props:
-        if prop["recommendation"] == "PASS" or prop["started"]:
+        if prop["recommendation"] == "PASS":
             continue
         if prop["ev_per_100"] <= 0:
             continue
 
-        # Kelly sizing
         if prop["recommendation"] == "BUY YES":
             buy_price = prop["kalshi_price"]
+            bet_model_prob = prop["model_prob"]
         else:
-            buy_price = 1 - prop["kalshi_price"]  # BUY NO
+            buy_price = 1 - prop["kalshi_price"]
+            bet_model_prob = 1 - prop["model_prob"]
 
         dec_odds = 1 / buy_price if buy_price > 0 else 1
-        kelly = _kelly(
-            prop["model_prob"] if prop["recommendation"] == "BUY YES" else (1 - prop["model_prob"]),
-            dec_odds,
-        )
+        kelly = _kelly(bet_model_prob, dec_odds)
         bet_amount = round(max(1.0, min(bankroll * kelly, remaining)), 2)
         if bet_amount < 1.0 or remaining < 1.0:
             break
         remaining -= bet_amount
 
         contracts = bet_amount / buy_price if buy_price > 0 else 0
-        potential_payout = round(contracts, 2)
-        potential_profit = round(potential_payout - bet_amount, 2)
+        potential_profit = round(contracts - bet_amount, 2)
 
         bet_slip_bets.append({
             "player": prop["player"],
@@ -585,6 +672,7 @@ async def edge_props(request: Request):
             "model_prob": prop["model_prob"],
             "edge_pct": prop["edge_pct"],
             "kalshi_ticker": prop["kalshi_ticker"],
+            "prop_category": prop["prop_category"],
             "contracts": round(contracts, 1),
             "bet_amount": bet_amount,
             "potential_profit": potential_profit,
@@ -599,7 +687,6 @@ async def edge_props(request: Request):
         "props": all_props,
         "total_props": len(all_props),
         "value_props": sum(1 for p in all_props if p["recommendation"] != "PASS"),
-        "started_games": sum(1 for p in all_props if p["started"]),
         "bet_slip": {
             "bankroll": bankroll,
             "bets": bet_slip_bets,

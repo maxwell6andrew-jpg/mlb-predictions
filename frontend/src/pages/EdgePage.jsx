@@ -152,17 +152,15 @@ function BetSlip({ slip }) {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {slip.bets.map((bet, i) => {
-          const started = isGameStarted(bet.game_time)
           const isBetYes = bet.recommendation === 'BUY YES'
-          const buyPriceCents = Math.round((bet.buy_price || 0) * 100)
-          // For BUY NO, flip model/edge to NO perspective
-          const betModelPct = isBetYes ? Math.round(bet.model_prob * 100) : Math.round((1 - bet.model_prob) * 100)
-          const betEdge = isBetYes ? bet.edge_pct : Math.abs(bet.edge_pct)
           const betColor = isBetYes ? '#22c55e' : '#ef4444'
+          // Always show YES-side Kalshi price and model prob
+          const kalshiCents = Math.round((bet.model_prob !== undefined ? (isBetYes ? bet.buy_price : (1 - bet.buy_price)) : bet.buy_price) * 100)
+          const modelPct = Math.round((bet.model_prob || 0) * 100)
           return (
           <div key={i} style={{
             background: 'var(--bg-surface)',
-            border: `1px solid ${started ? '#ef444430' : 'var(--border)'}`,
+            border: '1px solid var(--border)',
             borderRadius: 10,
             padding: '12px 16px',
             display: 'flex',
@@ -170,39 +168,36 @@ function BetSlip({ slip }) {
             alignItems: 'center',
             gap: 12,
             flexWrap: 'wrap',
-            opacity: started ? 0.6 : 1,
           }}>
             <div style={{ flex: '1 1 200px' }}>
               <div style={{ fontWeight: 700, fontSize: 15 }}>
                 <span style={{ color: betColor }}>{bet.recommendation}</span>
                 <span style={{ color: 'var(--text-primary)', marginLeft: 6 }}>{bet.player}</span>
                 <span style={{ color: 'var(--text-muted)', fontSize: 12, marginLeft: 4 }}>{bet.prop}</span>
-                {started && <span style={{ marginLeft: 8 }}><LiveBadge /></span>}
               </div>
-              <div style={{ fontSize: 12, color: started ? '#ef4444' : 'var(--text-muted)', marginTop: 2 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
                 {bet.matchup}
                 {bet.game_time && <> &middot; {new Date(bet.game_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</>}
-                {started && ' (started)'}
               </div>
             </div>
 
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
               <div style={{ textAlign: 'center', minWidth: 55 }}>
-                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Price</div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Kalshi</div>
                 <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 15, color: '#3b82f6' }}>
-                  {buyPriceCents}&cent;
+                  {kalshiCents}&cent;
                 </div>
               </div>
               <div style={{ textAlign: 'center', minWidth: 50 }}>
                 <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Model</div>
                 <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13 }}>
-                  {betModelPct}%
+                  {modelPct}%
                 </div>
               </div>
               <div style={{ textAlign: 'center', minWidth: 50 }}>
                 <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Edge</div>
-                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13, color: '#22c55e' }}>
-                  +{betEdge}%
+                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13, color: betColor }}>
+                  {bet.edge_pct > 0 ? '+' : ''}{bet.edge_pct}%
                 </div>
               </div>
               <div style={{
@@ -388,50 +383,28 @@ function PropCard({ prop }) {
   const started = prop.started
   const isPass = prop.recommendation === 'PASS'
   const isBuyYes = prop.recommendation === 'BUY YES'
+  const isBuyNo = prop.recommendation === 'BUY NO'
 
-  // For BUY NO, flip to NO perspective so numbers make sense to the user
-  // BUY NO means: "market overprices YES, buy the NO contract"
-  // Display the NO price (what you pay), NO model prob, and positive NO edge
-  const displayPrice = isBuyYes ? prop.kalshi_price : (1 - prop.kalshi_price)
-  const displayModel = isBuyYes ? prop.model_prob : (1 - prop.model_prob)
-  const displayEdge = isBuyYes ? prop.edge_pct : Math.abs(prop.edge_pct)
+  // Always show YES-side numbers (what Kalshi shows for the prop)
+  const priceCents = Math.round(prop.kalshi_price * 100)
+  const modelPct = Math.round(prop.model_prob * 100)
+  const absEdge = Math.abs(prop.edge_pct)
 
-  const edgeColor = displayEdge > 5 ? '#22c55e' : displayEdge > 2 ? '#f97316' : displayEdge > 0 ? '#eab308' : '#ef4444'
-  const priceCents = Math.round(displayPrice * 100)
-  const modelPct = Math.round(displayModel * 100)
+  const edgeColor = absEdge > 5 ? '#22c55e' : absEdge > 2 ? '#f97316' : absEdge > 0 ? '#eab308' : '#6b7280'
 
   return (
     <div style={{
       background: 'var(--bg-surface)',
-      border: `1px solid ${started ? '#ef444440' : isPass ? 'var(--border)' : edgeColor + '40'}`,
+      border: `1px solid ${isPass ? 'var(--border)' : edgeColor + '40'}`,
       borderRadius: 10,
       padding: '14px 16px',
-      opacity: started ? 0.6 : 1,
     }}>
-      {started && (
-        <div style={{
-          background: '#ef444410',
-          border: '1px solid #ef444430',
-          borderRadius: 6,
-          padding: '6px 12px',
-          marginBottom: 10,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          fontSize: 12,
-          color: '#ef4444',
-          fontWeight: 600,
-        }}>
-          <LiveBadge /> Game started &mdash; prices may have changed
-        </div>
-      )}
-
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
             <span style={{
-              background: '#3b82f620',
-              color: '#3b82f6',
+              background: ({ hits: '#3b82f6', totals: '#8b5cf6', spread: '#f59e0b', rfi: '#ef4444' }[prop.prop_category] || '#3b82f6') + '20',
+              color: ({ hits: '#3b82f6', totals: '#8b5cf6', spread: '#f59e0b', rfi: '#ef4444' }[prop.prop_category] || '#3b82f6'),
               padding: '2px 8px',
               borderRadius: 4,
               fontSize: 11,
@@ -443,8 +416,8 @@ function PropCard({ prop }) {
             <span style={{ fontSize: 15, fontWeight: 700 }}>{prop.player}</span>
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            {prop.player_team} &middot; {prop.matchup}
-            {prop.game_time && !started && (
+            {prop.player_team ? `${prop.player_team} · ` : ''}{prop.matchup}
+            {prop.game_time && (
               <span> &middot; {new Date(prop.game_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
             )}
           </div>
@@ -476,15 +449,13 @@ function PropCard({ prop }) {
             {prop.recommendation}
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            .{String(Math.round(prop.matchup_avg * 1000)).padStart(3, '0')} matchup AVG
+            {prop.matchup_avg ? `.${String(Math.round(prop.matchup_avg * 1000)).padStart(3, '0')} matchup AVG` : ''}
           </div>
         </div>
 
         <div style={{ display: 'flex', gap: 16 }}>
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2, textTransform: 'uppercase' }}>
-              {isBuyYes ? 'YES Price' : isPass ? 'Kalshi' : 'NO Price'}
-            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2, textTransform: 'uppercase' }}>Kalshi</div>
             <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 20, color: '#3b82f6' }}>
               {priceCents}&cent;
             </div>
@@ -503,7 +474,7 @@ function PropCard({ prop }) {
               fontSize: 20,
               color: edgeColor,
             }}>
-              +{displayEdge}%
+              {prop.edge_pct > 0 ? '+' : ''}{prop.edge_pct}%
             </div>
           </div>
         </div>
@@ -578,7 +549,8 @@ export default function EdgePage() {
   const [propsData, setPropsData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [propsFilter, setPropsFilter] = useState('all') // 'all', 'edges', 'started'
+  const [propsFilter, setPropsFilter] = useState('all') // 'all', 'edges'
+  const [propsCategory, setPropsCategory] = useState('all') // 'all', 'hits', 'totals', 'spread', 'rfi'
   const [propsHitLine, setPropsHitLine] = useState(0) // 0=all, 1=1+, 2=2+, 3=3+
 
   useEffect(() => {
@@ -606,8 +578,8 @@ export default function EdgePage() {
 
   const filteredProps = (propsData?.props || []).filter(p => {
     if (propsFilter === 'edges' && p.recommendation === 'PASS') return false
-    if (propsFilter === 'started' && !p.started) return false
-    if (propsHitLine > 0 && p.hit_line !== propsHitLine) return false
+    if (propsCategory !== 'all' && p.prop_category !== propsCategory) return false
+    if (propsCategory === 'hits' && propsHitLine > 0 && p.hit_line !== propsHitLine) return false
     return true
   })
 
@@ -854,7 +826,6 @@ export default function EdgePage() {
             {[
               { label: 'Total Props', value: propsData.total_props },
               { label: 'Value Picks', value: propsData.value_props, color: '#22c55e' },
-              { label: 'Games Started', value: propsData.started_games, color: '#ef4444' },
             ].map((s, i) => (
               <div key={i} style={{
                 background: 'var(--bg-surface)',
@@ -871,12 +842,11 @@ export default function EdgePage() {
             ))}
           </div>
 
-          {/* Filter buttons */}
+          {/* Filter: Edges */}
           <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
             {[
               { key: 'all', label: 'All Props' },
               { key: 'edges', label: 'Edges Only', color: '#22c55e' },
-              { key: 'started', label: 'Started Games', color: '#ef4444' },
             ].map(f => (
               <button
                 key={f.key}
@@ -896,24 +866,27 @@ export default function EdgePage() {
               </button>
             ))}
           </div>
-          <div style={{ display: 'flex', gap: 4, marginBottom: 16, flexWrap: 'wrap' }}>
+
+          {/* Filter: Prop type */}
+          <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
             {[
-              { key: 0, label: 'All Lines' },
-              { key: 1, label: '1+ Hits' },
-              { key: 2, label: '2+ Hits' },
-              { key: 3, label: '3+ Hits' },
+              { key: 'all', label: 'All Types' },
+              { key: 'hits', label: 'Hits', color: '#3b82f6' },
+              { key: 'totals', label: 'Total Runs', color: '#8b5cf6' },
+              { key: 'spread', label: 'Spread', color: '#f59e0b' },
+              { key: 'rfi', label: 'Run 1st Inn', color: '#ef4444' },
             ].map(f => (
               <button
                 key={f.key}
-                onClick={() => setPropsHitLine(f.key)}
+                onClick={() => { setPropsCategory(f.key); if (f.key !== 'hits') setPropsHitLine(0) }}
                 style={{
-                  padding: '5px 12px',
+                  padding: '6px 14px',
                   borderRadius: 6,
-                  fontSize: 11,
-                  fontWeight: propsHitLine === f.key ? 700 : 400,
-                  color: propsHitLine === f.key ? '#3b82f6' : 'var(--text-secondary)',
-                  background: propsHitLine === f.key ? '#3b82f615' : 'transparent',
-                  border: `1px solid ${propsHitLine === f.key ? '#3b82f650' : 'var(--border)'}`,
+                  fontSize: 12,
+                  fontWeight: propsCategory === f.key ? 700 : 400,
+                  color: propsCategory === f.key ? (f.color || 'var(--accent)') : 'var(--text-secondary)',
+                  background: propsCategory === f.key ? `${f.color || 'var(--accent)'}15` : 'transparent',
+                  border: `1px solid ${propsCategory === f.key ? (f.color || 'var(--accent)') + '50' : 'var(--border)'}`,
                   cursor: 'pointer',
                 }}
               >
@@ -921,6 +894,36 @@ export default function EdgePage() {
               </button>
             ))}
           </div>
+
+          {/* Sub-filter: Hit lines (only shown when hits category selected) */}
+          {propsCategory === 'hits' && (
+            <div style={{ display: 'flex', gap: 4, marginBottom: 16, flexWrap: 'wrap' }}>
+              {[
+                { key: 0, label: 'All Lines' },
+                { key: 1, label: '1+ Hits' },
+                { key: 2, label: '2+ Hits' },
+                { key: 3, label: '3+ Hits' },
+              ].map(f => (
+                <button
+                  key={f.key}
+                  onClick={() => setPropsHitLine(f.key)}
+                  style={{
+                    padding: '5px 12px',
+                    borderRadius: 6,
+                    fontSize: 11,
+                    fontWeight: propsHitLine === f.key ? 700 : 400,
+                    color: propsHitLine === f.key ? '#3b82f6' : 'var(--text-secondary)',
+                    background: propsHitLine === f.key ? '#3b82f615' : 'transparent',
+                    border: `1px solid ${propsHitLine === f.key ? '#3b82f650' : 'var(--border)'}`,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {propsCategory !== 'hits' && <div style={{ marginBottom: 16 }} />}
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 12 }}>
             {filteredProps.map((prop, i) => (
