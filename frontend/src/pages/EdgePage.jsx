@@ -382,11 +382,14 @@ function PropCard({ prop }) {
   const typeColor = PROP_TYPE_COLOR[prop.type] || 'var(--text-muted)'
   const typeLabel = PROP_TYPE_LABEL[prop.type] || prop.type
   const started = isGameStarted(prop.game_time)
+  const hasKalshi = prop.kalshi_price && prop.kalshi_price > 0
+  const kalshiCents = hasKalshi ? Math.round(prop.kalshi_price * 100) : null
+  const kalshi2Cents = prop.kalshi_2plus_price ? Math.round(prop.kalshi_2plus_price * 100) : null
 
   return (
     <div style={{
       background: 'var(--bg-surface)',
-      border: `1px solid ${started ? '#ef444430' : typeColor + '30'}`,
+      border: `1px solid ${started ? '#ef444430' : hasKalshi ? '#3b82f640' : typeColor + '30'}`,
       borderRadius: 10,
       padding: '14px 16px',
       opacity: started ? 0.65 : 1,
@@ -418,6 +421,19 @@ function PropCard({ prop }) {
             }}>
               {typeLabel}
             </span>
+            {hasKalshi && (
+              <span style={{
+                background: '#3b82f620',
+                color: '#3b82f6',
+                padding: '2px 6px',
+                borderRadius: 3,
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: 0.5,
+              }}>
+                KALSHI
+              </span>
+            )}
             <span style={{ fontSize: 15, fontWeight: 700 }}>{prop.player}</span>
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
@@ -456,11 +472,55 @@ function PropCard({ prop }) {
             Projected: <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{prop.projected_value}</span>
           </div>
         </div>
+        {hasKalshi && (
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2 }}>KALSHI</div>
+            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 18, color: '#3b82f6' }}>
+              {kalshiCents}&cent;
+            </div>
+            {prop.kalshi_edge != null && (
+              <div style={{
+                fontSize: 11,
+                fontFamily: 'JetBrains Mono, monospace',
+                fontWeight: 600,
+                color: prop.kalshi_edge > 0 ? '#22c55e' : '#ef4444',
+                marginTop: 2,
+              }}>
+                {prop.kalshi_edge > 0 ? '+' : ''}{prop.kalshi_edge.toFixed(1)}% edge
+              </div>
+            )}
+          </div>
+        )}
       </div>
+
+      {/* Show 2+ hits market if available */}
+      {kalshi2Cents && (
+        <div style={{
+          marginTop: 6,
+          padding: '4px 12px',
+          background: '#3b82f608',
+          border: '1px solid #3b82f615',
+          borderRadius: 6,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          fontSize: 12,
+        }}>
+          <span style={{ color: 'var(--text-muted)' }}>2+ hits contract</span>
+          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, color: '#3b82f6' }}>
+            {kalshi2Cents}&cent;
+          </span>
+        </div>
+      )}
 
       <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 8, lineHeight: 1.5 }}>
         {prop.reasoning}
       </div>
+      {prop.kalshi_ticker && (
+        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+          {prop.kalshi_ticker}
+        </div>
+      )}
     </div>
   )
 }
@@ -661,6 +721,103 @@ export default function EdgePage() {
       {/* PROPS TAB */}
       {!loading && !error && tab === 'props' && propsData && (
         <>
+          {/* Kalshi Prop Edges */}
+          {propsData.kalshi_edges && propsData.kalshi_edges.length > 0 && (
+            <div style={{
+              background: 'linear-gradient(135deg, rgba(59,130,246,0.06), rgba(34,197,94,0.06))',
+              border: '2px solid #3b82f630',
+              borderRadius: 14,
+              padding: 20,
+              marginBottom: 24,
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <div>
+                  <div style={{ fontSize: 18, fontWeight: 800 }}>
+                    <span style={{ marginRight: 8 }}>Kalshi Prop Edges</span>
+                    <span style={{
+                      background: '#3b82f620',
+                      color: '#3b82f6',
+                      padding: '2px 8px',
+                      borderRadius: 4,
+                      fontSize: 10,
+                      fontWeight: 700,
+                      letterSpacing: 0.5,
+                      verticalAlign: 'middle',
+                    }}>PREDICTION MARKET</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                    Props where our model disagrees with Kalshi consumer prices &mdash; less volume = more edge
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>EDGES FOUND</div>
+                  <div style={{ fontSize: 20, fontWeight: 800, fontFamily: 'JetBrains Mono, monospace', color: '#22c55e' }}>
+                    {propsData.kalshi_edges.length}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {propsData.kalshi_edges.map((edge, i) => (
+                  <div key={i} style={{
+                    background: 'var(--bg-surface)',
+                    border: '1px solid #3b82f625',
+                    borderRadius: 10,
+                    padding: '10px 14px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: 10,
+                    flexWrap: 'wrap',
+                  }}>
+                    <div style={{ flex: '1 1 220px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{
+                          background: '#3b82f620',
+                          color: '#3b82f6',
+                          padding: '1px 6px',
+                          borderRadius: 3,
+                          fontSize: 10,
+                          fontWeight: 700,
+                        }}>KALSHI</span>
+                        <span style={{ fontWeight: 700, fontSize: 14 }}>{edge.player}</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                        {edge.prop} &middot; {edge.matchup}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <div style={{ textAlign: 'center', minWidth: 55 }}>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>PRICE</div>
+                        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 16, color: '#3b82f6' }}>
+                          {Math.round(edge.kalshi_price * 100)}&cent;
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'center', minWidth: 55 }}>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>EDGE</div>
+                        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 14, color: '#22c55e' }}>
+                          +{edge.model_edge_pct.toFixed(1)}%
+                        </div>
+                      </div>
+                      <div style={{
+                        textAlign: 'center',
+                        minWidth: 60,
+                        background: '#22c55e15',
+                        borderRadius: 8,
+                        padding: '4px 10px',
+                      }}>
+                        <div style={{ fontSize: 10, color: '#22c55e', fontWeight: 700 }}>BUY YES</div>
+                        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 12, color: '#22c55e' }}>
+                          {Math.round(edge.kalshi_price * 100)}&cent;
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {propsData.bet_slip && propsData.bet_slip.bets.length > 0 && (
             <div style={{
               background: 'linear-gradient(135deg, rgba(168,85,247,0.06), rgba(59,130,246,0.06))',
@@ -674,10 +831,13 @@ export default function EdgePage() {
                   <div style={{ fontSize: 18, fontWeight: 800 }}>Props Bet Slip</div>
                   <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
                     $100 bankroll &middot; {propsData.bet_slip.num_bets} prop{propsData.bet_slip.num_bets !== 1 ? 's' : ''} &middot; confidence-weighted
+                    {propsData.kalshi_prop_count > 0 && (
+                      <span style={{ color: '#3b82f6' }}> &middot; {propsData.kalshi_prop_count} with Kalshi prices</span>
+                    )}
                   </div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>TOTAL WAGERED</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>TOTAL INVESTED</div>
                   <div style={{ fontSize: 20, fontWeight: 800, fontFamily: 'JetBrains Mono, monospace', color: '#a855f7' }}>
                     ${propsData.bet_slip.total_wagered.toFixed(2)}
                   </div>
@@ -688,10 +848,12 @@ export default function EdgePage() {
                 {propsData.bet_slip.bets.map((bet, i) => {
                   const typeColor = PROP_TYPE_COLOR[bet.type] || 'var(--text-muted)'
                   const typeLabel = PROP_TYPE_LABEL[bet.type] || bet.type
+                  const hasKalshi = bet.has_kalshi
+                  const priceCents = hasKalshi ? Math.round(bet.kalshi_price * 100) : null
                   return (
                     <div key={i} style={{
                       background: 'var(--bg-surface)',
-                      border: '1px solid var(--border)',
+                      border: `1px solid ${hasKalshi ? '#3b82f625' : 'var(--border)'}`,
                       borderRadius: 10,
                       padding: '10px 14px',
                       display: 'flex',
@@ -710,6 +872,16 @@ export default function EdgePage() {
                             fontSize: 10,
                             fontWeight: 700,
                           }}>{typeLabel}</span>
+                          {hasKalshi && (
+                            <span style={{
+                              background: '#3b82f620',
+                              color: '#3b82f6',
+                              padding: '1px 5px',
+                              borderRadius: 3,
+                              fontSize: 9,
+                              fontWeight: 700,
+                            }}>KALSHI</span>
+                          )}
                           <span style={{ fontWeight: 700, fontSize: 14 }}>{bet.player}</span>
                         </div>
                         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
@@ -723,24 +895,52 @@ export default function EdgePage() {
                             {bet.projected_value}
                           </div>
                         </div>
-                        <div style={{ textAlign: 'center', minWidth: 45 }}>
-                          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>ODDS</div>
-                          <MoneylineTag ml={bet.est_odds} />
+                        <div style={{ textAlign: 'center', minWidth: 50 }}>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{hasKalshi ? 'PRICE' : 'ODDS'}</div>
+                          {hasKalshi ? (
+                            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 15, color: '#3b82f6' }}>
+                              {priceCents}&cent;
+                            </div>
+                          ) : (
+                            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13, color: 'var(--text-secondary)' }}>
+                              ~{bet.decimal_odds}x
+                            </div>
+                          )}
                         </div>
+                        {bet.kalshi_edge != null && (
+                          <div style={{ textAlign: 'center', minWidth: 45 }}>
+                            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>EDGE</div>
+                            <div style={{
+                              fontFamily: 'JetBrains Mono, monospace',
+                              fontWeight: 600,
+                              fontSize: 12,
+                              color: bet.kalshi_edge > 0 ? '#22c55e' : '#ef4444',
+                            }}>
+                              {bet.kalshi_edge > 0 ? '+' : ''}{bet.kalshi_edge.toFixed(0)}%
+                            </div>
+                          </div>
+                        )}
                         <div style={{
                           textAlign: 'center',
                           minWidth: 60,
-                          background: '#a855f715',
+                          background: hasKalshi ? '#22c55e15' : '#a855f715',
                           borderRadius: 8,
                           padding: '4px 10px',
                         }}>
-                          <div style={{ fontSize: 10, color: '#a855f7', fontWeight: 700 }}>BET</div>
-                          <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 800, fontSize: 15, color: '#a855f7' }}>
+                          <div style={{ fontSize: 10, color: hasKalshi ? '#22c55e' : '#a855f7', fontWeight: 700 }}>
+                            {hasKalshi ? 'BUY' : 'BET'}
+                          </div>
+                          <div style={{
+                            fontFamily: 'JetBrains Mono, monospace',
+                            fontWeight: 800,
+                            fontSize: 15,
+                            color: hasKalshi ? '#22c55e' : '#a855f7',
+                          }}>
                             ${bet.bet_amount.toFixed(2)}
                           </div>
                         </div>
                         <div style={{ textAlign: 'center', minWidth: 50 }}>
-                          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>WIN</div>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>PROFIT</div>
                           <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 13, color: '#22c55e' }}>
                             +${bet.potential_profit.toFixed(2)}
                           </div>
@@ -802,6 +1002,20 @@ export default function EdgePage() {
                 {propsData.strong_props}
               </span>
             </div>
+            {propsData.kalshi_prop_count > 0 && (
+              <div style={{
+                background: 'var(--bg-surface)',
+                border: '1px solid #3b82f630',
+                borderRadius: 8,
+                padding: '10px 16px',
+                fontSize: 13,
+              }}>
+                <span style={{ color: 'var(--text-muted)' }}>Kalshi Prices: </span>
+                <span style={{ fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', color: '#3b82f6' }}>
+                  {propsData.kalshi_prop_count}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Filter buttons */}
@@ -899,6 +1113,29 @@ export default function EdgePage() {
             <strong>Methodology:</strong> {seasonData.methodology}
           </div>
         </>
+      )}
+
+      {/* How Kalshi Props Work */}
+      {tab === 'props' && (
+        <div style={{
+          marginTop: 24,
+          padding: 16,
+          background: 'rgba(59,130,246,0.05)',
+          border: '1px solid rgba(59,130,246,0.2)',
+          borderRadius: 8,
+          fontSize: 12,
+          color: 'var(--text-secondary)',
+          lineHeight: 1.6,
+        }}>
+          <strong style={{ color: '#3b82f6' }}>Kalshi Player Props:</strong> Kalshi offers player hit contracts (1+, 2+, 3+ hits) with prices set by consumers.
+          Lower volume = less efficient pricing = bigger edges. A "1+ hits" contract at 64&cent; means the market thinks 64% chance of getting a hit.
+          If our model says 72%, that's an 8% edge &mdash; buy YES.
+          {propsData?.kalshi_status && (
+            <span style={{ display: 'block', marginTop: 6, color: 'var(--text-muted)', fontSize: 11 }}>
+              {propsData.kalshi_status}
+            </span>
+          )}
+        </div>
       )}
 
       {/* How Kalshi Works */}

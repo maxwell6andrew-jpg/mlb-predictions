@@ -111,7 +111,17 @@ def _load_private_key():
 
         # Option 1: Raw PEM content in env var (for Render / cloud deploys)
         if KALSHI_PRIVATE_KEY_PEM:
-            pem_data = KALSHI_PRIVATE_KEY_PEM.encode()
+            pem_str = KALSHI_PRIVATE_KEY_PEM
+            # Render may mangle newlines — fix common issues
+            if "\\n" in pem_str and "\n" not in pem_str.replace("\\n", ""):
+                pem_str = pem_str.replace("\\n", "\n")
+            # Ensure proper PEM formatting
+            if "-----BEGIN" in pem_str and "\n" not in pem_str[10:30]:
+                # All on one line — reconstruct with newlines
+                pem_str = pem_str.replace("-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----\n")
+                pem_str = pem_str.replace("-----END RSA PRIVATE KEY-----", "\n-----END RSA PRIVATE KEY-----")
+            pem_data = pem_str.strip().encode()
+            print(f"  Kalshi: Loading key from env var ({len(pem_data)} bytes)")
             return serialization.load_pem_private_key(pem_data, password=None)
 
         # Option 2: File path
@@ -120,9 +130,12 @@ def _load_private_key():
             with open(key_path, "rb") as f:
                 return serialization.load_pem_private_key(f.read(), password=None)
 
+        print("  Kalshi: No private key configured (set KALSHI_PRIVATE_KEY_PEM or KALSHI_PRIVATE_KEY_PATH)")
         return None
     except Exception as e:
         print(f"  Kalshi: Failed to load private key: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -214,12 +227,11 @@ def _parse_event_ticker(event_ticker: str) -> dict:
 
 async def fetch_mlb_markets() -> list[dict]:
     """
-    Fetch today's MLB game markets from Kalshi.
+    Fetch today's + tomorrow's MLB game markets from Kalshi.
 
-    Strategy:
-    1. Paginate through /events to find KXMLBGAME events
-    2. For each game event, fetch individual market tickers with prices
-    3. Return structured game data with contract prices
+    Strategy: Directly fetch each game's market by constructing tickers
+    from today's MLB schedule. Ticker format: KXMLBGAME-26APR02HHMMAWYHOME
+    We fetch the individual market endpoints for each team (fast, no pagination).
     """
     global _markets_cache, _cache_time
 
@@ -232,151 +244,136 @@ async def fetch_mlb_markets() -> list[dict]:
         print("  Kalshi: No private key available")
         return []
 
+    # Reverse mapping: full team name → Kalshi abbreviation
+    team_to_abbrev = {v: k for k, v in KALSHI_ABBREV_TO_TEAM.items()}
+
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            # Get today and tomorrow's date strings for filtering
+        async with httpx.AsyncClient(timeout=30) as client:
+            # Step 1: Get today's MLB schedule from MLB Stats API (free, no auth)
             pacific = timezone(timedelta(hours=-7))
             today = datetime.now(pacific)
-            today_str = today.strftime("%y%b%d").upper()  # e.g. "26APR02"
-            tomorrow = today + timedelta(days=1)
-            tomorrow_str = tomorrow.strftime("%y%b%d").upper()
-
-            # Find all KXMLBGAME events by paginating through events
-            game_events = []
-            cursor = None
-            pages_searched = 0
-
-            for page in range(50):  # Up to 10,000 events
-                path = "/events"
-                headers = _get_headers("GET", path, private_key)
-                params = {"limit": 200, "with_nested_markets": "true"}
-                if cursor:
-                    params["cursor"] = cursor
-
-                resp = await client.get(f"{BASE_URL}{path}", params=params, headers=headers)
-                if resp.status_code != 200:
-                    print(f"  Kalshi: Events page {page} returned {resp.status_code}")
-                    break
-
-                data = resp.json()
-                events = data.get("events", [])
-                cursor = data.get("cursor")
-                pages_searched += 1
-
-                for e in events:
-                    ticker = e.get("event_ticker", "")
-                    if ticker.startswith("KXMLBGAME-"):
-                        # Check if it's for today or tomorrow
-                        if today_str in ticker or tomorrow_str in ticker:
-                            game_events.append(e)
-
-                if not cursor or not events:
-                    break
-
-            print(f"  Kalshi: Searched {pages_searched} event pages, found {len(game_events)} MLB game events")
-
-            # Now fetch full market details for each game
             games = []
-            for event in game_events:
-                event_ticker = event.get("event_ticker", "")
-                title = event.get("title", "")  # e.g. "Atlanta vs Arizona"
 
-                # Parse teams from title: "Atlanta vs Arizona"
-                parts = title.split(" vs ")
-                if len(parts) != 2:
+            for day_offset in [0, 1]:  # Today and tomorrow
+                target = today + timedelta(days=day_offset)
+                date_str = target.strftime("%Y-%m-%d")
+                kalshi_date = target.strftime("%y%b%d").upper()  # "26APR02"
+
+                try:
+                    sched_resp = await client.get(
+                        "https://statsapi.mlb.com/api/v1/schedule",
+                        params={"sportId": 1, "date": date_str, "hydrate": "team"},
+                        timeout=10,
+                    )
+                    sched_data = sched_resp.json()
+                    sched_dates = sched_data.get("dates", [])
+                    day_games = sched_dates[0]["games"] if sched_dates else []
+                except Exception as e:
+                    print(f"  Kalshi: MLB schedule fetch failed for {date_str}: {e}")
                     continue
 
-                away_kalshi = parts[0].strip()
-                home_kalshi = parts[1].strip()
-                away_team = KALSHI_TITLE_TO_TEAM.get(away_kalshi, away_kalshi)
-                home_team = KALSHI_TITLE_TO_TEAM.get(home_kalshi, home_kalshi)
+                print(f"  Kalshi: {len(day_games)} MLB games on {date_str}")
 
-                # Parse date/time from ticker
-                parsed = _parse_event_ticker(event_ticker)
-                game_date = parsed.get("date", "")
-                game_time = parsed.get("time", "")
+                for g in day_games:
+                    away_name = g["teams"]["away"]["team"]["name"]
+                    home_name = g["teams"]["home"]["team"]["name"]
+                    game_time_str = g.get("gameDate", "")
 
-                # Get individual market data for each team
-                # Markets are: KXMLBGAME-26APR041915ATLAZ-ATL and -AZ
-                nested_markets = event.get("markets", [])
+                    away_abbrev = team_to_abbrev.get(away_name, "")
+                    home_abbrev = team_to_abbrev.get(home_name, "")
+                    if not away_abbrev or not home_abbrev:
+                        continue
 
-                away_price = 0.0
-                home_price = 0.0
-                away_ticker = ""
-                home_ticker = ""
-                total_volume = 0
+                    # Parse game time to build Kalshi ticker
+                    # gameDate is ISO: "2026-04-02T23:10:00Z" → need ET
+                    try:
+                        game_dt = datetime.fromisoformat(game_time_str.replace("Z", "+00:00"))
+                        et = game_dt.astimezone(timezone(timedelta(hours=-4)))
+                        time_part = et.strftime("%H%M")  # "1910"
+                    except Exception:
+                        time_part = "1900"  # fallback
 
-                if nested_markets:
-                    # Use nested market data from event response
-                    for m in nested_markets:
-                        mticker = m.get("ticker", "")
-                        last_price = _parse_dollars(m.get("last_price_dollars"))
-                        no_ask = _parse_dollars(m.get("no_ask_dollars"))
-                        vol = m.get("volume", 0) or 0
-                        total_volume += vol
+                    # Construct event ticker: KXMLBGAME-26APR021910ATLAZ
+                    event_ticker = f"KXMLBGAME-{kalshi_date}{time_part}{away_abbrev}{home_abbrev}"
 
-                        # Determine which team this market is for
-                        suffix = mticker.split("-")[-1] if "-" in mticker else ""
-                        team_name = KALSHI_ABBREV_TO_TEAM.get(suffix, "")
+                    # Fetch both team markets directly
+                    away_market_ticker = f"{event_ticker}-{away_abbrev}"
+                    home_market_ticker = f"{event_ticker}-{home_abbrev}"
 
-                        price = last_price if last_price > 0 else (1.0 - _parse_dollars(m.get("no_bid_dollars")))
+                    away_price = 0.0
+                    home_price = 0.0
+                    total_volume = 0
 
-                        if team_name == away_team:
-                            away_price = price
-                            away_ticker = mticker
-                        elif team_name == home_team:
-                            home_price = price
-                            home_ticker = mticker
-                else:
-                    # Fetch market data individually
-                    for suffix_team in [(away_kalshi, away_team), (home_kalshi, home_team)]:
-                        # Try to find the right market ticker suffix
-                        for abbrev, full_name in KALSHI_ABBREV_TO_TEAM.items():
-                            if full_name == suffix_team[1]:
-                                mticker = f"{event_ticker}-{abbrev}"
-                                mpath = f"/markets/{mticker}"
-                                mheaders = _get_headers("GET", mpath, private_key)
-                                try:
-                                    mresp = await client.get(f"{BASE_URL}{mpath}", headers=mheaders)
-                                    if mresp.status_code == 200:
-                                        m = mresp.json().get("market", {})
-                                        price = _parse_dollars(m.get("last_price_dollars"))
-                                        vol = m.get("volume", 0) or 0
-                                        total_volume += vol
+                    for mticker, is_away in [(away_market_ticker, True), (home_market_ticker, False)]:
+                        mpath = f"/markets/{mticker}"
+                        mheaders = _get_headers("GET", mpath, private_key)
+                        try:
+                            mresp = await client.get(f"{BASE_URL}{mpath}", headers=mheaders)
+                            if mresp.status_code == 200:
+                                m = mresp.json().get("market", {})
+                                price = _parse_dollars(m.get("last_price_dollars"))
+                                vol = m.get("volume", 0) or 0
+                                total_volume += vol
+                                if is_away:
+                                    away_price = price
+                                else:
+                                    home_price = price
+                            elif mresp.status_code == 404:
+                                # Try with different time offsets (Kalshi time might differ by a few min)
+                                pass
+                        except Exception:
+                            pass
 
-                                        if full_name == away_team:
-                                            away_price = price
-                                            away_ticker = mticker
-                                        else:
-                                            home_price = price
-                                            home_ticker = mticker
-                                except Exception:
-                                    pass
-                                break
+                    # Skip if no prices found
+                    if away_price <= 0 and home_price <= 0:
+                        # Try nearby time offsets (±5 min, ±10 min)
+                        found = False
+                        for offset_min in [5, -5, 10, -10, 15, -15, 30, -30]:
+                            try:
+                                alt_dt = et + timedelta(minutes=offset_min)
+                                alt_time = alt_dt.strftime("%H%M")
+                                alt_event = f"KXMLBGAME-{kalshi_date}{alt_time}{away_abbrev}{home_abbrev}"
+                                alt_ticker = f"{alt_event}-{away_abbrev}"
+                                apath = f"/markets/{alt_ticker}"
+                                aheaders = _get_headers("GET", apath, private_key)
+                                aresp = await client.get(f"{BASE_URL}{apath}", headers=aheaders)
+                                if aresp.status_code == 200:
+                                    event_ticker = alt_event
+                                    m = aresp.json().get("market", {})
+                                    away_price = _parse_dollars(m.get("last_price_dollars"))
+                                    # Also get home
+                                    hpath = f"/markets/{alt_event}-{home_abbrev}"
+                                    hheaders = _get_headers("GET", hpath, private_key)
+                                    hresp = await client.get(f"{BASE_URL}{hpath}", headers=hheaders)
+                                    if hresp.status_code == 200:
+                                        hm = hresp.json().get("market", {})
+                                        home_price = _parse_dollars(hm.get("last_price_dollars"))
+                                    found = True
+                                    break
+                            except Exception:
+                                continue
+                        if not found:
+                            continue
 
-                # Skip games with no price data
-                if away_price <= 0 and home_price <= 0:
-                    continue
+                    # Infer missing side
+                    if away_price > 0 and home_price <= 0:
+                        home_price = 1.0 - away_price
+                    elif home_price > 0 and away_price <= 0:
+                        away_price = 1.0 - home_price
 
-                # If we only have one side, infer the other
-                if away_price > 0 and home_price <= 0:
-                    home_price = 1.0 - away_price
-                elif home_price > 0 and away_price <= 0:
-                    away_price = 1.0 - home_price
-
-                games.append({
-                    "event_ticker": event_ticker,
-                    "title": title,
-                    "home_team": home_team,
-                    "away_team": away_team,
-                    "home_price": round(home_price, 4),
-                    "away_price": round(away_price, 4),
-                    "home_ticker": home_ticker,
-                    "away_ticker": away_ticker,
-                    "volume": total_volume,
-                    "game_date": game_date,
-                    "game_time": game_time,
-                })
+                    games.append({
+                        "event_ticker": event_ticker,
+                        "title": f"{away_name} vs {home_name}",
+                        "home_team": home_name,
+                        "away_team": away_name,
+                        "home_price": round(home_price, 4),
+                        "away_price": round(away_price, 4),
+                        "home_ticker": f"{event_ticker}-{home_abbrev}",
+                        "away_ticker": f"{event_ticker}-{away_abbrev}",
+                        "volume": total_volume,
+                        "game_date": date_str,
+                        "game_time_iso": game_time_str,
+                    })
 
             _markets_cache = {"games": games}
             _cache_time = now
@@ -390,10 +387,209 @@ async def fetch_mlb_markets() -> list[dict]:
         return _markets_cache.get("games", [])
 
 
+async def fetch_mlb_prop_markets() -> list[dict]:
+    """
+    Fetch today's + tomorrow's MLB player prop markets from Kalshi.
+
+    Prop types:
+      - KXMLBHIT: Player hits (1+, 2+, 3+, 4+ hits)
+      - KXMLBTOTAL: Game total runs (over 3, 4, 5, 6... runs)
+      - KXMLBSPREAD: Run line (team wins by X+ runs)
+      - KXMLBRFI: Run in first inning (binary)
+
+    Market ticker examples:
+      KXMLBHIT-26APR021410MINKC-KCBWITT7-2  → Bobby Witt Jr. 2+ hits
+      KXMLBTOTAL-26APR032215NYMSF-8         → NYM vs SF: Over 8 total runs
+      KXMLBSPREAD-26APR032145ATLAZ-ATL2     → Atlanta wins by 2+ runs
+    """
+    global _markets_cache, _cache_time
+
+    now = datetime.now(timezone.utc)
+
+    # Return cached props if fresh
+    if _cache_time and (now - _cache_time).total_seconds() < CACHE_TTL_SECONDS and _markets_cache.get("props"):
+        return _markets_cache.get("props", [])
+
+    private_key = _load_private_key()
+    if not private_key:
+        return []
+
+    team_to_abbrev = {v: k for k, v in KALSHI_ABBREV_TO_TEAM.items()}
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            pacific = timezone(timedelta(hours=-7))
+            today = datetime.now(pacific)
+            all_props = []
+
+            for day_offset in [0, 1]:
+                target = today + timedelta(days=day_offset)
+                date_str = target.strftime("%Y-%m-%d")
+                kalshi_date = target.strftime("%y%b%d").upper()
+
+                try:
+                    sched_resp = await client.get(
+                        "https://statsapi.mlb.com/api/v1/schedule",
+                        params={"sportId": 1, "date": date_str, "hydrate": "team,probablePitcher"},
+                        timeout=10,
+                    )
+                    sched_data = sched_resp.json()
+                    sched_dates = sched_data.get("dates", [])
+                    day_games = sched_dates[0]["games"] if sched_dates else []
+                except Exception as e:
+                    print(f"  Kalshi props: MLB schedule fetch failed for {date_str}: {e}")
+                    continue
+
+                for g in day_games:
+                    away_name = g["teams"]["away"]["team"]["name"]
+                    home_name = g["teams"]["home"]["team"]["name"]
+                    game_time_str = g.get("gameDate", "")
+
+                    away_abbrev = team_to_abbrev.get(away_name, "")
+                    home_abbrev = team_to_abbrev.get(home_name, "")
+                    if not away_abbrev or not home_abbrev:
+                        continue
+
+                    try:
+                        game_dt = datetime.fromisoformat(game_time_str.replace("Z", "+00:00"))
+                        et = game_dt.astimezone(timezone(timedelta(hours=-4)))
+                        time_part = et.strftime("%H%M")
+                    except Exception:
+                        time_part = "1900"
+
+                    game_suffix = f"{kalshi_date}{time_part}{away_abbrev}{home_abbrev}"
+
+                    # Fetch prop events for this game: hits, totals, spreads, RFI
+                    for prop_type in ["KXMLBHIT", "KXMLBTOTAL", "KXMLBSPREAD", "KXMLBRFI"]:
+                        event_ticker = f"{prop_type}-{game_suffix}"
+                        mpath = "/markets"
+                        mheaders = _get_headers("GET", mpath, private_key)
+
+                        try:
+                            mresp = await client.get(
+                                f"{BASE_URL}{mpath}",
+                                headers=mheaders,
+                                params={"event_ticker": event_ticker, "limit": 100},
+                            )
+                            if mresp.status_code != 200:
+                                # Try time offsets
+                                found = False
+                                for offset_min in [5, -5, 10, -10, 15, -15, 30, -30]:
+                                    try:
+                                        alt_dt = et + timedelta(minutes=offset_min)
+                                        alt_time = alt_dt.strftime("%H%M")
+                                        alt_suffix = f"{kalshi_date}{alt_time}{away_abbrev}{home_abbrev}"
+                                        alt_event = f"{prop_type}-{alt_suffix}"
+                                        aheaders = _get_headers("GET", mpath, private_key)
+                                        aresp = await client.get(
+                                            f"{BASE_URL}{mpath}",
+                                            headers=aheaders,
+                                            params={"event_ticker": alt_event, "limit": 100},
+                                        )
+                                        if aresp.status_code == 200:
+                                            markets = aresp.json().get("markets", [])
+                                            if markets:
+                                                event_ticker = alt_event
+                                                mresp = aresp
+                                                found = True
+                                                break
+                                    except Exception:
+                                        continue
+                                if not found:
+                                    continue
+
+                            markets = mresp.json().get("markets", [])
+                        except Exception:
+                            continue
+
+                        for m in markets:
+                            price = _parse_dollars(m.get("last_price_dollars"))
+                            if price <= 0:
+                                continue  # No price = no liquidity
+
+                            ticker = m.get("ticker", "")
+                            subtitle = m.get("subtitle", m.get("title", ""))
+
+                            prop_data = {
+                                "ticker": ticker,
+                                "event_ticker": event_ticker,
+                                "prop_type": prop_type,
+                                "subtitle": subtitle,
+                                "price": round(price, 4),
+                                "volume": m.get("volume", 0) or 0,
+                                "home_team": home_name,
+                                "away_team": away_name,
+                                "game_date": date_str,
+                                "game_time_iso": game_time_str,
+                            }
+
+                            # Parse prop details from subtitle and ticker
+                            if prop_type == "KXMLBHIT":
+                                # "Bobby Witt Jr.: 2+ hits?" or "Juan Soto: 1+ hits?"
+                                hit_match = re.match(r'(.+?):\s*(\d+)\+\s*hits\?', subtitle)
+                                if hit_match:
+                                    prop_data["player_name"] = hit_match.group(1).strip()
+                                    prop_data["line"] = int(hit_match.group(2))
+                                    prop_data["prop_label"] = f"{prop_data['line']}+ hits"
+
+                                # Extract team abbrev from ticker: ...-KCBWITT7-2
+                                parts = ticker.replace(event_ticker + "-", "").split("-")
+                                if parts:
+                                    player_part = parts[0]
+                                    # Match team abbrev at start
+                                    for abbrev in sorted(KALSHI_ABBREV_TO_TEAM.keys(), key=len, reverse=True):
+                                        if player_part.startswith(abbrev):
+                                            prop_data["player_team"] = KALSHI_ABBREV_TO_TEAM[abbrev]
+                                            break
+
+                            elif prop_type == "KXMLBTOTAL":
+                                # Ticker ends with run count: ...-8 means 8+ total runs
+                                parts = ticker.replace(event_ticker + "-", "")
+                                try:
+                                    run_line = int(parts)
+                                    prop_data["line"] = run_line
+                                    prop_data["prop_label"] = f"Over {run_line} total runs"
+                                    prop_data["player_name"] = f"{away_name} vs {home_name}"
+                                except ValueError:
+                                    pass
+
+                            elif prop_type == "KXMLBSPREAD":
+                                # "Atlanta wins by over 2.5 runs?"
+                                spread_match = re.match(r'(.+?)\s+wins\s+by\s+over\s+([\d.]+)\s+runs\?', subtitle)
+                                if spread_match:
+                                    team_city = spread_match.group(1).strip()
+                                    spread_val = float(spread_match.group(2))
+                                    prop_data["spread_team"] = team_city
+                                    prop_data["line"] = spread_val
+                                    prop_data["prop_label"] = f"{team_city} -{spread_val}"
+                                    prop_data["player_name"] = f"{team_city} -{spread_val}"
+
+                            elif prop_type == "KXMLBRFI":
+                                prop_data["line"] = 0.5
+                                prop_data["prop_label"] = "Run in 1st inning"
+                                prop_data["player_name"] = f"{away_name} vs {home_name}"
+
+                            all_props.append(prop_data)
+
+            # Cache props alongside games
+            _markets_cache["props"] = all_props
+            if not _cache_time:
+                _cache_time = now
+            print(f"  Kalshi: {len(all_props)} prop markets with prices")
+            return all_props
+
+    except Exception as e:
+        print(f"  Kalshi props API error: {e}")
+        import traceback
+        traceback.print_exc()
+        return _markets_cache.get("props", [])
+
+
 def get_kalshi_status() -> str:
     """Return cache status."""
     if _cache_time:
         age = (datetime.now(timezone.utc) - _cache_time).seconds
         count = len(_markets_cache.get("games", []))
-        return f"{count} MLB games cached ({age}s ago)"
+        props_count = len(_markets_cache.get("props", []))
+        return f"{count} MLB games, {props_count} props cached ({age}s ago)"
     return "No Kalshi data fetched yet"

@@ -17,7 +17,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from app.data.vegas_lines import get_vegas_line
-from app.data.kalshi_client import fetch_mlb_markets, match_kalshi_team, get_kalshi_status
+from app.data.kalshi_client import fetch_mlb_markets, fetch_mlb_prop_markets, match_kalshi_team, get_kalshi_status
 from app.data.park_factors import get_park_factor
 
 limiter = Limiter(key_func=get_remote_address)
@@ -475,17 +475,67 @@ async def edge_props(request: Request):
             if k_prop:
                 all_props.append(k_prop)
 
+    # --- MATCH WITH KALSHI PROP MARKETS ---
+    kalshi_props = await fetch_mlb_prop_markets()
+
+    # Build lookup: normalize player name → list of Kalshi hit props
+    kalshi_hit_props = {}
+    for kp in kalshi_props:
+        if kp.get("prop_type") == "KXMLBHIT" and kp.get("player_name"):
+            name_key = kp["player_name"].lower().strip()
+            if name_key not in kalshi_hit_props:
+                kalshi_hit_props[name_key] = []
+            kalshi_hit_props[name_key].append(kp)
+
+    # Enrich model props with Kalshi market prices
+    for prop in all_props:
+        player_name = prop.get("player", "").lower().strip()
+
+        if prop["type"] in ("hits", "strikeout") and player_name in kalshi_hit_props:
+            # Find matching hit count line
+            kalshi_matches = kalshi_hit_props[player_name]
+            # For hits OVER 0.5 → match Kalshi 1+ hits
+            # For strikeout → no direct Kalshi match yet
+            if prop["type"] == "hits":
+                # Our line is 0.5 hits → Kalshi "1+ hits" is equivalent
+                for km in kalshi_matches:
+                    if km.get("line") == 1:
+                        prop["kalshi_price"] = km["price"]
+                        prop["kalshi_ticker"] = km["ticker"]
+                        prop["kalshi_label"] = km.get("prop_label", "")
+                        # Edge = model implied prob of OVER - (1 - kalshi NO price)
+                        # Kalshi YES price = implied prob of 1+ hits
+                        # If our model says higher prob → buy YES
+                        model_hit_prob = min(0.95, prop["projected_value"] / 1.0)  # rough
+                        # More accurate: P(1+ hit) = 1 - (1-AVG)^AB
+                        prop["kalshi_edge"] = round((model_hit_prob - km["price"]) * 100, 2)
+                        break
+                # Also attach 2+ hits market if available
+                for km in kalshi_matches:
+                    if km.get("line") == 2:
+                        prop["kalshi_2plus_price"] = km["price"]
+                        prop["kalshi_2plus_ticker"] = km["ticker"]
+                        break
+
+        elif prop["type"] == "home_run" and player_name:
+            # No direct Kalshi HR prop yet, but check anyway
+            pass
+
     # Sort by confidence (strongest props first)
     all_props.sort(key=lambda p: p["confidence_score"], reverse=True)
 
-    # --- BUILD $100 PROPS BET SLIP ---
-    # Allocate bankroll across top props by confidence-weighted sizing
+    # --- BUILD $100 PROPS BET SLIP (with real Kalshi prices) ---
     bankroll = 100.0
     props_bet_slip = []
     remaining = bankroll
+
     for prop in all_props:
         if prop["confidence_score"] < 55:
-            continue  # Skip weak props
+            continue
+
+        kalshi_price = prop.get("kalshi_price", 0)
+        has_kalshi = kalshi_price > 0
+
         # Size by confidence: strong=5%, moderate=3%, lean=2% of bankroll
         if prop["confidence_score"] >= 75:
             pct = 0.05
@@ -500,18 +550,26 @@ async def edge_props(request: Request):
             break
         remaining -= bet_amount
 
-        # Estimate payout (typical prop odds: -115 for overs, +100 for HR)
-        if prop["type"] == "home_run":
-            est_odds = +320  # HR props typically +300 to +350
-        elif prop["type"] == "total_bases":
-            est_odds = -115
-        elif prop["type"] == "pitcher_strikeouts":
-            est_odds = -120
+        if has_kalshi:
+            # Real Kalshi payout: buy YES at kalshi_price, pays $1 if correct
+            contracts = bet_amount / kalshi_price
+            potential_payout = round(contracts * 1.0, 2)
+            potential_profit = round(potential_payout - bet_amount, 2)
+            dec_odds = round(1 / kalshi_price, 2)
         else:
-            est_odds = -120  # hits/Ks overs typically -115 to -125
-
-        dec = _decimal_odds(est_odds)
-        potential_profit = round(bet_amount * (dec - 1), 2)
+            # Fallback: estimated odds
+            if prop["type"] == "home_run":
+                est_odds = +320
+            elif prop["type"] == "total_bases":
+                est_odds = -115
+            elif prop["type"] == "pitcher_strikeouts":
+                est_odds = -120
+            else:
+                est_odds = -120
+            dec_odds = round(_decimal_odds(est_odds), 2)
+            potential_profit = round(bet_amount * (dec_odds - 1), 2)
+            contracts = 0
+            potential_payout = round(bet_amount + potential_profit, 2)
 
         props_bet_slip.append({
             "player": prop["player"],
@@ -522,8 +580,16 @@ async def edge_props(request: Request):
             "projected_value": prop["projected_value"],
             "confidence": prop["confidence"],
             "confidence_score": prop["confidence_score"],
-            "est_odds": est_odds,
+            "kalshi_price": kalshi_price if has_kalshi else None,
+            "kalshi_ticker": prop.get("kalshi_ticker", ""),
+            "kalshi_2plus_price": prop.get("kalshi_2plus_price"),
+            "kalshi_2plus_ticker": prop.get("kalshi_2plus_ticker", ""),
+            "kalshi_edge": prop.get("kalshi_edge"),
+            "has_kalshi": has_kalshi,
+            "decimal_odds": dec_odds,
+            "contracts": round(contracts, 1) if has_kalshi else None,
             "bet_amount": bet_amount,
+            "potential_payout": potential_payout,
             "potential_profit": potential_profit,
             "reasoning": prop["reasoning"],
             "game_time": prop["game_time"],
@@ -532,11 +598,31 @@ async def edge_props(request: Request):
     total_wagered = round(sum(b["bet_amount"] for b in props_bet_slip), 2)
     total_potential_profit = round(sum(b["potential_profit"] for b in props_bet_slip), 2)
 
+    # --- KALSHI-ONLY PROP EDGES ---
+    # Props where Kalshi price exists and our model disagrees significantly
+    kalshi_edges = []
+    for prop in all_props:
+        if prop.get("kalshi_price") and prop.get("kalshi_edge", 0) > 3:
+            kalshi_edges.append({
+                "player": prop["player"],
+                "player_team": prop.get("player_team", ""),
+                "prop": prop.get("kalshi_label", prop["prop"]),
+                "kalshi_price": prop["kalshi_price"],
+                "kalshi_ticker": prop.get("kalshi_ticker", ""),
+                "model_edge_pct": prop["kalshi_edge"],
+                "confidence": prop["confidence"],
+                "matchup": prop["matchup"],
+                "game_time": prop.get("game_time", ""),
+            })
+    kalshi_edges.sort(key=lambda e: e["model_edge_pct"], reverse=True)
+
     return {
         "date": today,
         "props": all_props,
         "total_props": len(all_props),
         "strong_props": sum(1 for p in all_props if p["confidence_score"] >= 70),
+        "kalshi_prop_count": sum(1 for p in all_props if p.get("kalshi_price")),
+        "kalshi_edges": kalshi_edges,
         "bet_slip": {
             "bankroll": bankroll,
             "bets": props_bet_slip,
@@ -545,6 +631,7 @@ async def edge_props(request: Request):
             "total_potential_profit": total_potential_profit,
             "num_bets": len(props_bet_slip),
         },
+        "kalshi_status": get_kalshi_status(),
     }
 
 
