@@ -148,25 +148,68 @@ async def fetch_mlb_markets() -> list[dict]:
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            # Search for MLB markets
-            path = "/markets"
-            params = {
-                "limit": 100,
-                "status": "open",
-            }
+            # First, try to find MLB series tickers
+            markets = []
 
-            headers = _get_headers("GET", path, private_key) if private_key else {}
+            # Method 1: Search by series with MLB/baseball category
+            for search_term in ["MLB", "baseball"]:
+                path = "/markets"
+                params = {
+                    "limit": 200,
+                    "status": "open",
+                    "series_ticker": search_term,
+                }
+                headers = _get_headers("GET", path, private_key) if private_key else {}
+                try:
+                    resp = await client.get(f"{BASE_URL}{path}", params=params, headers=headers)
+                    if resp.status_code == 200:
+                        batch = resp.json().get("markets", [])
+                        markets.extend(batch)
+                        print(f"  Kalshi: series_ticker={search_term} → {len(batch)} markets")
+                except Exception:
+                    pass
 
-            resp = await client.get(
-                f"{BASE_URL}{path}",
-                params=params,
-                headers=headers,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            # Method 2: If no series results, try the events endpoint
+            if not markets:
+                path = "/events"
+                params = {"limit": 100, "status": "open"}
+                headers = _get_headers("GET", path, private_key) if private_key else {}
+                try:
+                    resp = await client.get(f"{BASE_URL}{path}", params=params, headers=headers)
+                    if resp.status_code == 200:
+                        events = resp.json().get("events", [])
+                        mlb_events = [e for e in events if any(
+                            kw in (e.get("title", "") + e.get("category", "")).lower()
+                            for kw in ["mlb", "baseball", "yankees", "dodgers", "mets"]
+                        )]
+                        print(f"  Kalshi: Found {len(mlb_events)} MLB events out of {len(events)} total")
+                        for event in mlb_events:
+                            event_ticker = event.get("event_ticker", "")
+                            if event_ticker:
+                                mpath = "/markets"
+                                mparams = {"limit": 50, "event_ticker": event_ticker}
+                                mheaders = _get_headers("GET", mpath, private_key) if private_key else {}
+                                mresp = await client.get(f"{BASE_URL}{mpath}", params=mparams, headers=mheaders)
+                                if mresp.status_code == 200:
+                                    batch = mresp.json().get("markets", [])
+                                    markets.extend(batch)
+                except Exception as e:
+                    print(f"  Kalshi: Events search failed: {e}")
 
-            markets = data.get("markets", [])
-            print(f"  Kalshi: Fetched {len(markets)} markets")
+            # Method 3: Fallback — fetch all open markets and filter
+            if not markets:
+                path = "/markets"
+                params = {"limit": 200, "status": "open"}
+                headers = _get_headers("GET", path, private_key) if private_key else {}
+                resp = await client.get(f"{BASE_URL}{path}", params=params, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+                markets = data.get("markets", [])
+
+            print(f"  Kalshi: Total markets to scan: {len(markets)}")
+            # Log first few market titles for debugging
+            for m in markets[:5]:
+                print(f"    → {m.get('ticker', '?')}: {m.get('title', '?')}")
 
             # Filter for MLB game markets
             mlb_games = []

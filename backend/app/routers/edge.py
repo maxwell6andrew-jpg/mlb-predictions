@@ -802,3 +802,16 @@ def _generate_pitcher_k_prop(pitcher, pitcher_name, pitcher_team, opp_team,
 async def kalshi_status(request: Request):
     """Check Kalshi market cache status."""
     return {"kalshi_status": get_kalshi_status()}
+
+
+@router.get("/debug")
+@limiter.limit("10/minute")
+async def kalshi_debug(request: Request):
+    """Debug: show raw Kalshi markets for troubleshooting."""
+    from app.data.kalshi_client import fetch_mlb_markets
+    markets = await fetch_mlb_markets()
+    return {
+        "kalshi_status": get_kalshi_status(),
+        "num_markets": len(markets),
+        "markets": markets[:20],  # First 20
+    }
