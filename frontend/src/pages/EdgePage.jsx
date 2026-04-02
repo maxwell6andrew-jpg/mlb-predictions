@@ -153,7 +153,12 @@ function BetSlip({ slip }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {slip.bets.map((bet, i) => {
           const started = isGameStarted(bet.game_time)
+          const isBetYes = bet.recommendation === 'BUY YES'
           const buyPriceCents = Math.round((bet.buy_price || 0) * 100)
+          // For BUY NO, flip model/edge to NO perspective
+          const betModelPct = isBetYes ? Math.round(bet.model_prob * 100) : Math.round((1 - bet.model_prob) * 100)
+          const betEdge = isBetYes ? bet.edge_pct : Math.abs(bet.edge_pct)
+          const betColor = isBetYes ? '#22c55e' : '#ef4444'
           return (
           <div key={i} style={{
             background: 'var(--bg-surface)',
@@ -169,8 +174,9 @@ function BetSlip({ slip }) {
           }}>
             <div style={{ flex: '1 1 200px' }}>
               <div style={{ fontWeight: 700, fontSize: 15 }}>
-                <span style={{ color: '#22c55e' }}>BUY YES</span>
-                <span style={{ color: 'var(--text-primary)', marginLeft: 6 }}>{bet.team}</span>
+                <span style={{ color: betColor }}>{bet.recommendation}</span>
+                <span style={{ color: 'var(--text-primary)', marginLeft: 6 }}>{bet.player}</span>
+                <span style={{ color: 'var(--text-muted)', fontSize: 12, marginLeft: 4 }}>{bet.prop}</span>
                 {started && <span style={{ marginLeft: 8 }}><LiveBadge /></span>}
               </div>
               <div style={{ fontSize: 12, color: started ? '#ef4444' : 'var(--text-muted)', marginTop: 2 }}>
@@ -190,13 +196,13 @@ function BetSlip({ slip }) {
               <div style={{ textAlign: 'center', minWidth: 50 }}>
                 <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Model</div>
                 <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13 }}>
-                  {(bet.model_prob * 100).toFixed(0)}%
+                  {betModelPct}%
                 </div>
               </div>
               <div style={{ textAlign: 'center', minWidth: 50 }}>
                 <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Edge</div>
                 <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 13, color: '#22c55e' }}>
-                  +{bet.edge_pct}%
+                  +{betEdge}%
                 </div>
               </div>
               <div style={{
@@ -380,11 +386,19 @@ function TodayGameCard({ game }) {
 /* --- KALSHI PROP CARD --- */
 function PropCard({ prop }) {
   const started = prop.started
-  const edgeColor = prop.edge_pct > 5 ? '#22c55e' : prop.edge_pct > 2 ? '#f97316' : prop.edge_pct > 0 ? '#eab308' : '#ef4444'
   const isPass = prop.recommendation === 'PASS'
   const isBuyYes = prop.recommendation === 'BUY YES'
-  const priceCents = Math.round(prop.kalshi_price * 100)
-  const modelPct = Math.round(prop.model_prob * 100)
+
+  // For BUY NO, flip to NO perspective so numbers make sense to the user
+  // BUY NO means: "market overprices YES, buy the NO contract"
+  // Display the NO price (what you pay), NO model prob, and positive NO edge
+  const displayPrice = isBuyYes ? prop.kalshi_price : (1 - prop.kalshi_price)
+  const displayModel = isBuyYes ? prop.model_prob : (1 - prop.model_prob)
+  const displayEdge = isBuyYes ? prop.edge_pct : Math.abs(prop.edge_pct)
+
+  const edgeColor = displayEdge > 5 ? '#22c55e' : displayEdge > 2 ? '#f97316' : displayEdge > 0 ? '#eab308' : '#ef4444'
+  const priceCents = Math.round(displayPrice * 100)
+  const modelPct = Math.round(displayModel * 100)
 
   return (
     <div style={{
@@ -468,7 +482,9 @@ function PropCard({ prop }) {
 
         <div style={{ display: 'flex', gap: 16 }}>
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2, textTransform: 'uppercase' }}>Kalshi</div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2, textTransform: 'uppercase' }}>
+              {isBuyYes ? 'YES Price' : isPass ? 'Kalshi' : 'NO Price'}
+            </div>
             <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 20, color: '#3b82f6' }}>
               {priceCents}&cent;
             </div>
@@ -487,7 +503,7 @@ function PropCard({ prop }) {
               fontSize: 20,
               color: edgeColor,
             }}>
-              {prop.edge_pct > 0 ? '+' : ''}{prop.edge_pct}%
+              +{displayEdge}%
             </div>
           </div>
         </div>
