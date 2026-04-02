@@ -9,6 +9,7 @@ On startup:
 6. Compute team win projections for all 30 teams
 """
 
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
