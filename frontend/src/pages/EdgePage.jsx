@@ -257,7 +257,7 @@ function TodayGameCard({ game }) {
           color: '#ef4444',
           fontWeight: 600,
         }}>
-          <LiveBadge /> Game has started — betting lines may be closed
+          <LiveBadge /> Game has started — lines may have changed significantly
         </div>
       )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
