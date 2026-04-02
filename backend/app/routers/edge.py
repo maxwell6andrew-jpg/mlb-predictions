@@ -804,14 +804,13 @@ async def kalshi_status(request: Request):
     return {"kalshi_status": get_kalshi_status()}
 
 
-@router.get("/debug")
+@router.get("/kalshi-debug")
 @limiter.limit("10/minute")
-async def kalshi_debug(request: Request):
+async def kalshi_debug_view(request: Request):
     """Debug: show raw Kalshi markets for troubleshooting."""
-    from app.data.kalshi_client import fetch_mlb_markets
     markets = await fetch_mlb_markets()
     return {
         "kalshi_status": get_kalshi_status(),
         "num_markets": len(markets),
-        "markets": markets[:20],  # First 20
+        "markets": markets[:20],
     }
